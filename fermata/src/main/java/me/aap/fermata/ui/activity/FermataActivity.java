@@ -15,6 +15,8 @@ public interface FermataActivity extends AppActivity {
 
 	boolean isCarActivity();
 
+	default void showAirPlay() {}
+
 	void setRequestedOrientation(int requestedOrientation);
 
 	@Nullable

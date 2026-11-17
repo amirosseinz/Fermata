@@ -246,6 +246,7 @@ public class NavBarMediator extends PrefNavBarMediator
 			b.addItem(R.id.nav_about, R.drawable.about, R.string.about);
 			b.addItem(R.id.settings_fragment, R.drawable.settings, R.string.settings);
 			if (!a.getAppActivity().isCarActivity()) b.addItem(R.id.nav_nearby_screen, R.string.screen_nearby);
+			else if (BuildConfig.AIRPLAY_RECEIVER) b.addItem(R.id.nav_airplay, R.string.airplay_receive);
 			if (BuildConfig.AUTO) b.addItem(R.id.nav_donate, R.drawable.coffee, R.string.donate);
 			b.addItem(R.id.nav_exit, R.drawable.exit, a.isCarActivityNotMirror() ? R.string.restart : R.string.exit);
 		});
@@ -276,6 +277,9 @@ public class NavBarMediator extends PrefNavBarMediator
 			return true;
 		} else if (itemId == R.id.settings_fragment) {
 			MainActivityDelegate.get(item.getContext()).showFragment(R.id.settings_fragment);
+			return true;
+		} else if (itemId == R.id.nav_airplay) {
+			MainActivityDelegate.get(item.getContext()).getAppActivity().showAirPlay();
 			return true;
 		} else if (itemId == R.id.nav_nearby_screen) {
 			var a = MainActivityDelegate.get(item.getContext());

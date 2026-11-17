@@ -34,7 +34,6 @@
         android:required="false" />
 
     <queries>
-        <package android:name="io.github.jqssun.airplay" />
         <intent>
             <action android:name="android.intent.action.OPEN_DOCUMENT_TREE" />
         </intent>
@@ -90,6 +89,10 @@
         <activity
             android:name="me.aap.fermata.mirror.NearbyScreenActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:exported="false" />
+
+        <activity
+            android:name="me.aap.fermata.mirror.AirPlayActivity"
             android:exported="false" />
 
         <service
