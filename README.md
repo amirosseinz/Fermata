@@ -1,6 +1,6 @@
-# Fermata Media Player
+# Fermata Auto
 
-Fermata is a GPL-3.0 Android player for local video and audio, playlists, and IPTV. This fork adds better subtitle handling, offline captions, playback controls, and local screen sharing.
+Watch YouTube, IPTV, and video files on your car’s Android Auto display. This fork improves subtitle support and playback controls, adds offline Whisper captions, and lets you share a phone screen over your local network.
 
 [Releases for this fork](https://github.com/amirosseinz/Fermata/releases) · [Original Fermata project](https://github.com/AndreyPavlenko/Fermata)
 
@@ -13,9 +13,9 @@ Fermata is a GPL-3.0 Android player for local video and audio, playlists, and IP
 | **Offline Whisper captions** | Choose and download verified models, then generate captions on-device through ExoPlayer. The model manager offers compact English and multilingual options. CPU and Vulkan support depend on the build and device. |
 | **Playback and Android Auto controls** | Adds full-screen controls, per-item volume, and buffering adjustments. Keeps the active car video surface attached when unrelated views change. |
 | **Nearby Screen** | Share screen video between two Android phones running Fermata on the same local network. Start **Receive an Android screen** on one phone, then **Share this Android screen** on the other and enter the pairing code. |
-| **Experimental iPhone AirPlay** | Receive iPhone screen video inside Fermata over the local network. On Android Auto, the receiver requires the host to affirm Park and allow video. |
+| **Experimental iPhone AirPlay** | Receive iPhone screen video inside Fermata over the local network. The car’s AirPlay receiver opens only when Android Auto reports Park and permits video. |
 
-Fermata also retains folder and playlist playback, CUE and M3U support, favourites, bookmarks, playback position and speed settings, audio effects, and the MediaPlayer, ExoPlayer, and VLC engines. The IPTV add-on supports XMLTV programme listings and catch-up. Android TV and Android Auto support depend on the build and host.
+Fermata also plays music and playlists on Android and supports Android TV. Other features include CUE and M3U, favourites, bookmarks, saved playback positions, per-item speed and audio effects, and a choice of MediaPlayer, ExoPlayer, or VLC. The IPTV add-on supports XMLTV programme listings and catch-up.
 
 ## Getting started
 
