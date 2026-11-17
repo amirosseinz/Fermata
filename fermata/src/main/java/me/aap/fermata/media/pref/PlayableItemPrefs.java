@@ -17,6 +17,11 @@ public interface PlayableItemPrefs extends MediaPrefs {
 	Pref<BooleanSupplier> WATCHED = Pref.b("WATCHED", false).withInheritance(false);
 	Pref<LongSupplier> POSITION = Pref.l("POSITION", 0).withInheritance(false);
 	Pref<LongSupplier> SUB_ID = Pref.l("SUB_ID", -1).withInheritance(false);
+	Pref<Supplier<String>> SUB_DOCUMENT = Pref.s("SUB_DOCUMENT", "").withInheritance(false);
+	Pref<Supplier<String>> SUB_DOCUMENT_NAME = Pref.s("SUB_DOCUMENT_NAME", "").withInheritance(false);
+	Pref<Supplier<String>> SUB_DOCUMENT_ENCODING = Pref.s("SUB_DOCUMENT_ENCODING", "windows-1252")
+			.withInheritance(false);
+	long SUB_OFF = Long.MIN_VALUE + 2;
 	Pref<LongSupplier> AUDIO_ID = Pref.l("AUDIO_ID", -1).withInheritance(false);
 
 	default String[] getBookmarks() {
@@ -74,6 +79,16 @@ public interface PlayableItemPrefs extends MediaPrefs {
 		convertIntLongPref(SUB_ID);
 		if (id == null) removePref(SUB_ID);
 		else applyLongPref(SUB_ID, id);
+	}
+
+	Pref<IntSupplier> PLAYBACK_VOLUME = Pref.i("PLAYBACK_VOLUME", 100);
+
+	default int getPlaybackVolumePref() {
+		return Math.max(0, Math.min(200, getIntPref(PLAYBACK_VOLUME)));
+	}
+
+	default void setPlaybackVolumePref(int percent) {
+		applyIntPref(PLAYBACK_VOLUME, Math.max(0, Math.min(200, percent)));
 	}
 
 	default Long getAudioIdPref() {

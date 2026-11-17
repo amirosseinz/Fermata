@@ -102,6 +102,10 @@
     <item name="subtitle_delay" type="id" />
     <item name="subtitle_prefs" type="id" />
     <item name="subtitle_auto" type="id" />
+    <item name="subtitle_online_search" type="id" />
+    <item name="subtitle_document_load" type="id" />
+    <item name="subtitle_stream_off" type="id" />
+    <item name="subtitle_auto_start" type="id" />
     <item name="select_subtitles" type="id" />
     <item name="select_subtitle_stream" type="id" />
 
@@ -143,4 +147,7 @@
 
     <item name="cursor" type="id" />
 
+    <item name="control_fullscreen" type="id" />
+    <item name="playback_volume" type="id" />
+    <item name="player_appearance" type="id" />
 </resources>

@@ -8,7 +8,10 @@ import static me.aap.utils.ui.UiUtils.getTextAppearanceSize;
 import static me.aap.utils.ui.UiUtils.isVisible;
 import static me.aap.utils.ui.UiUtils.toIntPx;
 
+import android.app.AlertDialog;
 import android.content.Context;
+import android.content.Intent;
+import android.provider.OpenableColumns;
 import android.content.res.TypedArray;
 import android.os.Bundle;
 import android.os.Parcelable;
@@ -31,6 +34,7 @@ import com.google.android.material.textview.MaterialTextView;
 import java.util.List;
 
 import me.aap.fermata.R;
+import me.aap.fermata.addon.SubGenAddon;
 import me.aap.fermata.media.engine.AudioStreamInfo;
 import me.aap.fermata.media.engine.MediaEngine;
 import me.aap.fermata.media.engine.SubtitleStreamInfo;
@@ -40,12 +44,17 @@ import me.aap.fermata.media.lib.MediaLib.PlayableItem;
 import me.aap.fermata.media.pref.BrowsableItemPrefs;
 import me.aap.fermata.media.pref.MediaPrefs;
 import me.aap.fermata.media.pref.PlaybackControlPrefs;
+import me.aap.fermata.media.pref.PlayableItemPrefs;
+import me.aap.fermata.media.sub.FileSubtitles;
 import me.aap.fermata.media.service.FermataServiceUiBinder;
 import me.aap.fermata.media.service.MediaSessionCallback;
 import me.aap.fermata.ui.activity.MainActivityDelegate;
 import me.aap.fermata.ui.activity.MainActivityListener;
 import me.aap.fermata.ui.activity.MainActivityPrefs;
+import me.aap.utils.app.App;
 import me.aap.utils.async.FutureSupplier;
+import me.aap.utils.function.ResultConsumer;
+import me.aap.utils.log.Log;
 import me.aap.utils.function.BooleanSupplier;
 import me.aap.utils.function.DoubleSupplier;
 import me.aap.utils.function.IntSupplier;
@@ -103,6 +112,8 @@ public class ControlPanelView extends ConstraintLayout
 		g.setOnClickListener(this::showHideBars);
 		g = findViewById(R.id.control_menu_button);
 		g.setOnClickListener(this::showMenu);
+		findViewById(R.id.control_subtitles).setOnClickListener(this::showSubtitleMenu);
+		findViewById(R.id.control_fullscreen).setOnClickListener(v -> getActivity().getBody().toggleCurrentVideo());
 		setShowHideBarsIcon(a);
 	}
 
@@ -138,6 +149,10 @@ public class ControlPanelView extends ConstraintLayout
 		b.bindProgressTime(findViewById(R.id.seek_time));
 		b.bindProgressTotal(findViewById(R.id.seek_total));
 		b.bound();
+		post(() -> {
+			var a = getActivity();
+			if (a.getBody() != null) a.getBody().refreshFullscreenShortcut(a);
+		});
 	}
 
 	void computeSize() {
@@ -151,10 +166,13 @@ public class ControlPanelView extends ConstraintLayout
 		float textSize = getTextAppearanceSize(getContext(), textAppearance) * scale;
 		int textPad = seekTime.getPaddingTop() + seekTime.getPaddingBottom();
 		int pad = 2 * toIntPx(getContext(), 4) + textPad;
-		int iconSize = (int) (textSize + pad);
-		int panelSize = (int) (size * scale);
-		int buttonSize = (int) (panelSize - textSize - pad);
+		int minimumTarget = toIntPx(getContext(), 48);
+		int iconSize = Math.max(minimumTarget, (int) (textSize + pad));
+		int buttonSize = Math.max(minimumTarget, (int) (size * scale - textSize - pad));
+		int panelSize = iconSize + buttonSize;
 		ControlPanelSeekView seek = findViewById(R.id.seek_bar);
+		setHeight(R.id.control_subtitles, seek.isEnabled() ? iconSize : buttonSize);
+		setHeight(R.id.control_fullscreen, seek.isEnabled() ? iconSize : buttonSize);
 
 		if (seek.isEnabled()) {
 			setHeight(seek, iconSize);
@@ -239,6 +257,7 @@ public class ControlPanelView extends ConstraintLayout
 		MainActivityDelegate a = getActivity();
 		hideTimer = null;
 		mask |= MASK_VIDEO_MODE;
+		findViewById(R.id.control_subtitles).setVisibility(VISIBLE);
 
 		a.setBarsHidden(true);
 		setShowHideBarsIcon(a);
@@ -266,6 +285,7 @@ public class ControlPanelView extends ConstraintLayout
 		MainActivityDelegate a = getActivity();
 		hideTimer = null;
 		mask &= ~MASK_VIDEO_MODE;
+		findViewById(R.id.control_subtitles).setVisibility(GONE);
 		a.getFloatingButton().setVisibility(VISIBLE);
 
 		if ((mask & MASK_VISIBLE) == 0) {
@@ -489,7 +509,8 @@ public class ControlPanelView extends ConstraintLayout
 
 	private boolean isLine1(View v) {
 		int id = v.getId();
-		return id == R.id.seek_bar || id == R.id.show_hide_bars || id == R.id.control_menu_button;
+		return id == R.id.seek_bar || id == R.id.show_hide_bars ||
+				id == R.id.control_subtitles || id == R.id.control_fullscreen || id == R.id.control_menu_button;
 	}
 
 	private void showHideBars(View v) {
@@ -507,6 +528,24 @@ public class ControlPanelView extends ConstraintLayout
 		MediaEngine eng = a.getMediaServiceBinder().getCurrentEngine();
 		PlayableItem i = (eng == null) ? null : eng.getSource();
 		if (i != null) new MenuHandler(getMenu(a), i, eng).show();
+	}
+
+	void updateFullscreenShortcut(boolean available, boolean fullscreen) {
+		android.widget.ImageView button = findViewById(R.id.control_fullscreen);
+		button.setVisibility(available ? VISIBLE : GONE);
+		int label = fullscreen ? R.string.exit_fullscreen_video : R.string.show_fullscreen_video;
+		button.setImageResource(fullscreen ? R.drawable.player_fullscreen_exit : R.drawable.player_fullscreen);
+		button.setContentDescription(getContext().getText(label));
+		button.setTooltipText(getContext().getText(label));
+	}
+
+	private void showSubtitleMenu(View view) {
+		var a = getActivity();
+		var engine = a.getMediaServiceBinder().getCurrentEngine();
+		var source = engine == null ? null : engine.getSource();
+		if (source == null || !source.isVideo() || !engine.isSubtitlesSupported()) return;
+		var menu = getMenu(a);
+		menu.show(new MenuHandler(menu, source, engine)::buildSubtitlesMenu);
 	}
 
 	private OverlayMenu getMenu(MainActivityDelegate a) {
@@ -637,9 +676,139 @@ public class ControlPanelView extends ConstraintLayout
 
 		@Override
 		protected void buildSubtitlesMenu(OverlayMenu.Builder b) {
-			b.addItem(R.id.select_subtitles, R.string.select_subtitles)
+			b.addItem(R.id.select_subtitles, R.drawable.subtitles, R.string.subtitle_choose_track)
 					.setFutureSubmenu(this::buildSubtitleStreamMenu);
+			var source = engine.getSource();
+			if (source != null && source.isVideo()) {
+				var onCar = getActivity().getAppActivity().isCarActivity();
+				b.addItem(R.id.subtitle_document_load, me.aap.utils.R.drawable.folder, onCar ?
+						R.string.subtitle_document_load_phone : R.string.subtitle_document_load).setHandler(i -> {
+					pickSubtitle(source);
+					return true;
+				});
+				b.addItem(R.id.subtitle_online_search, onCar ? R.string.subtitle_online_search_phone :
+						R.string.subtitle_online_search).setHandler(i -> {
+					var ctx = getActivity().getContext();
+					if (onCar) UiUtils.showInfo(ctx, ctx.getString(R.string.subtitle_online_use_phone));
+					else new OnlineSubtitleSearch(ctx, source,
+							stream -> applyExternalSubtitle(source, stream)).show();
+					return true;
+				});
+				b.addItem(R.id.subtitle_auto_start, R.drawable.subgen, onCar ?
+						R.string.subtitle_generate_phone : R.string.subtitle_generate).setHandler(i -> {
+					startAutoSubtitles(source);
+					return true;
+				});
+				if (engine.getCurrentSubtitleStreamInfo() != null ||
+						source.getPrefs().getBooleanPref(SubGenAddon.ENABLED)) {
+					b.addItem(R.id.subtitle_stream_off, R.string.subtitle_stream_off).setHandler(i -> {
+						if (!isCurrent(source)) return true;
+						source.getPrefs().applyBooleanPref(SubGenAddon.ENABLED, false);
+						source.getPrefs().setSubIdPref(PlayableItemPrefs.SUB_OFF);
+						engine.setCurrentSubtitleStream(null);
+						return true;
+					});
+				}
+			}
 			super.buildSubtitlesMenu(b);
+		}
+
+		private boolean isCurrent(PlayableItem source) {
+			return getActivity().getMediaSessionCallback().getEngine() == engine &&
+					engine.getSource() == source;
+		}
+
+		private void pickSubtitle(PlayableItem source) {
+			var a = getActivity();
+			var ctx = a.getContext();
+			if (a.getAppActivity().isCarActivity()) {
+				UiUtils.showInfo(ctx, ctx.getString(R.string.subtitle_document_phone));
+				return;
+			}
+			a.startActivityForResult(() -> new Intent(Intent.ACTION_OPEN_DOCUMENT)
+					.addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+					.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION |
+							Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)).onSuccess(result -> {
+				if (result == null || !isCurrent(source)) return;
+				var uri = result.getData();
+				if (uri == null) return;
+				var resolver = ctx.getContentResolver();
+				String displayName = null;
+				try (var cursor = resolver.query(uri, new String[]{OpenableColumns.DISPLAY_NAME},
+						null, null, null)) {
+					if (cursor != null && cursor.moveToFirst()) displayName = cursor.getString(0);
+				} catch (RuntimeException err) {
+					Log.w(err, "Unable to read subtitle document metadata");
+				}
+				var name = displayName == null ? uri.getLastPathSegment() : displayName;
+				if (name == null || !FileSubtitles.isSupported(name)) {
+					UiUtils.showAlert(ctx, R.string.subtitle_document_type);
+					return;
+				}
+				var labels = new String[]{"Automatic (Unicode / Western European)",
+						"Persian / Arabic (Windows-1256)", "Cyrillic (Windows-1251)"};
+				var encodings = new String[]{"windows-1252", "windows-1256", "windows-1251"};
+				new AlertDialog.Builder(ctx).setTitle(R.string.subtitle_document_encoding)
+						.setItems(labels, (dialog, index) -> {
+							if (!isCurrent(source)) return;
+							try {
+								resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+							} catch (SecurityException err) {
+								UiUtils.showAlert(ctx, R.string.subtitle_document_error, err.getLocalizedMessage());
+								return;
+							}
+							var stream = new SubtitleStreamInfo.External(uri, name, encodings[index]);
+							App.get().execute(() -> stream.load(ctx)).main()
+									.onSuccess(grid -> applyExternalSubtitle(source, stream))
+									.onFailure(err -> UiUtils.showAlert(ctx, R.string.subtitle_document_error,
+											err.getLocalizedMessage()));
+						}).setNegativeButton(android.R.string.cancel, null).show();
+			}).onFailure(err -> {
+				if (!ResultConsumer.Cancel.isCancellation(err))
+					UiUtils.showAlert(ctx, R.string.subtitle_document_error, err.getLocalizedMessage());
+			});
+		}
+
+		private void applyExternalSubtitle(PlayableItem source, SubtitleStreamInfo.External stream) {
+			if (!isCurrent(source)) return;
+			var prefs = source.getPrefs();
+			try (var edit = prefs.editPreferenceStore()) {
+				edit.setStringPref(PlayableItemPrefs.SUB_DOCUMENT, stream.uri().toString());
+				edit.setStringPref(PlayableItemPrefs.SUB_DOCUMENT_NAME, stream.getDescription());
+				edit.setStringPref(PlayableItemPrefs.SUB_DOCUMENT_ENCODING, stream.legacyEncoding());
+				edit.setLongPref(PlayableItemPrefs.SUB_ID, stream.getId());
+				edit.setBooleanPref(MediaPrefs.SUB_ENABLED, true);
+				edit.setBooleanPref(SubGenAddon.ENABLED, false);
+			}
+			engine.setCurrentSubtitleStream(stream);
+		}
+
+		private void startAutoSubtitles(PlayableItem source) {
+			var a = getActivity();
+			var ctx = a.getContext();
+			if (a.getAppActivity().isCarActivity()) {
+				UiUtils.showInfo(ctx, ctx.getString(R.string.sub_gen_model_phone));
+				return;
+			}
+			var cb = a.getMediaSessionCallback();
+			if (!cb.getEngineManager().isExoPlayerSupported()) {
+				UiUtils.showAlert(ctx, R.string.sub_gen_no_engine);
+				return;
+			}
+			SubGenAddon.manageModels(ctx, source.getPrefs(), () -> {
+				if (!isCurrent(source)) return;
+				engine.getPosition().main().onSuccess(position -> {
+					if (!isCurrent(source)) return;
+					try (var edit = source.getPrefs().editPreferenceStore()) {
+						edit.setBooleanPref(MediaPrefs.SUB_ENABLED, true);
+						edit.setBooleanPref(SubGenAddon.ENABLED, true);
+						edit.setLongPref(PlayableItemPrefs.SUB_ID, Long.MIN_VALUE);
+					}
+					android.widget.Toast.makeText(ctx, R.string.subtitle_generation_started,
+							android.widget.Toast.LENGTH_SHORT).show();
+					cb.playItem(source, position);
+				});
+			});
 		}
 
 		private FutureSupplier<Void> buildSubtitleStreamMenu(OverlayMenu.Builder b) {
@@ -660,13 +829,14 @@ public class ControlPanelView extends ConstraintLayout
 			SubtitleStreamInfo si = i.getData();
 			PlayableItem pi = (PlayableItem) getItem();
 
-			if (si.equals(engine.getCurrentSubtitleStreamInfo())) {
-				pi.getPrefs().setSubIdPref(null);
-				engine.setCurrentSubtitleStream(null);
-			} else {
-				engine.setCurrentSubtitleStream(si);
-				pi.getPrefs().setSubIdPref(si.getId());
+			if (engine.getSource() != pi || si.equals(engine.getCurrentSubtitleStreamInfo())) return true;
+			if (si instanceof SubtitleStreamInfo.Generated) {
+				startAutoSubtitles(pi);
+				return true;
 			}
+			pi.getPrefs().applyBooleanPref(SubGenAddon.ENABLED, false);
+			engine.setCurrentSubtitleStream(si);
+			pi.getPrefs().setSubIdPref(si.getId());
 
 			return true;
 		}
@@ -702,6 +872,21 @@ public class ControlPanelView extends ConstraintLayout
 				}
 			}
 
+			if (eng.supportsPlaybackVolume()) {
+				b.addItem(R.id.playback_volume, a.getContext().getString(R.string.playback_volume_percent,
+						pi.getPrefs().getPlaybackVolumePref())).setSubmenu(this::buildVolumeMenu);
+			}
+
+			if (pi.isVideo() && eng.isVideoModeRequired() && eng.isSplitModeSupported()) {
+				b.addItem(R.id.control_fullscreen, a.getBody().isVideoMode() ?
+						R.string.exit_fullscreen_video : R.string.show_fullscreen_video).setHandler(i -> {
+					a.getBody().toggleCurrentVideo();
+					return true;
+				});
+			}
+
+			b.addItem(R.id.player_appearance, R.string.player_appearance).setSubmenu(this::buildAppearanceMenu);
+
 			if (eng.getAudioEffects() != null) {
 				b.addItem(R.id.audio_effects_fragment, R.drawable.equalizer, R.string.audio_effects);
 			}
@@ -713,6 +898,42 @@ public class ControlPanelView extends ConstraintLayout
 
 			b.addItem(R.id.timer, R.drawable.timer, R.string.timer)
 					.setSubmenu(s -> new TimerMenuHandler(a).build(s));
+		}
+
+		private void buildVolumeMenu(OverlayMenu.Builder menu) {
+			int[] levels = {0, 25, 50, 75, 100, 125, 150, 175, 200};
+			var source = engine.getSource();
+			if (source == null) return;
+			var a = getActivity();
+			for (int i = 0; i < levels.length; i++) {
+				int percent = levels[i];
+				menu.addItem(UiUtils.getArrayItemId(i), a.getContext().getString(
+								R.string.playback_volume_value, percent))
+						.setChecked(source.getPrefs().getPlaybackVolumePref() == percent)
+						.setHandler(item -> {
+							if (!isCurrent(source)) return true;
+							if (engine.setPlaybackVolume(percent)) source.getPrefs().setPlaybackVolumePref(percent);
+							else UiUtils.showInfo(a.getContext(), a.getContext().getString(R.string.playback_volume_unavailable));
+							return true;
+						});
+			}
+		}
+
+		private void buildAppearanceMenu(OverlayMenu.Builder menu) {
+			var a = getActivity();
+			var prefs = a.getPrefs();
+			var pref = a.isCarActivity() ? MainActivityPrefs.THEME_AA : MainActivityPrefs.THEME_MAIN;
+			int[] values = {MainActivityPrefs.THEME_SYSTEM, MainActivityPrefs.THEME_LIGHT, MainActivityPrefs.THEME_DARK};
+			int[] labels = {R.string.theme_system, R.string.theme_light, R.string.theme_dark};
+			for (int i = 0; i < values.length; i++) {
+				int value = values[i];
+				menu.addItem(UiUtils.getArrayItemId(i), labels[i])
+						.setChecked(prefs.getIntPref(pref) == value)
+						.setHandler(item -> {
+							if (prefs.getIntPref(pref) != value) prefs.applyIntPref(pref, value);
+							return true;
+						});
+			}
 		}
 
 		private void buildRepeatMenu(OverlayMenu.Builder b) {

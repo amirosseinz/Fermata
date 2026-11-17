@@ -266,6 +266,14 @@ public interface MediaEngine extends Closeable {
 		return false;
 	}
 
+	default boolean supportsPlaybackVolume() {
+		return false;
+	}
+
+	default boolean setPlaybackVolume(int percent) {
+		return false;
+	}
+
 	default void mute(Context ctx) {
 		var amgr = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
 		if (amgr != null) amgr.adjustStreamVolume(STREAM_MUSIC, ADJUST_MUTE, FLAG_SHOW_UI);

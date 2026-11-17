@@ -1044,6 +1044,7 @@ public class MediaSessionCallback extends MediaSessionCompat.Callback
 		BrowsableItemPrefs parentPrefs = i.getParent().getPrefs();
 		PlaybackControlPrefs playbackPrefs = getPlaybackControlPrefs();
 		runWithRetry(() -> setAudiEffects(engine, prefs, parentPrefs, playbackPrefs));
+		if (engine.supportsPlaybackVolume()) engine.setPlaybackVolume(prefs.getPlaybackVolumePref());
 
 		if (playOnPrepared) {
 			setLastPlayed(i, pos);
@@ -1321,7 +1322,7 @@ public class MediaSessionCallback extends MediaSessionCompat.Callback
 		PlaybackStateCompat state = new PlaybackStateCompat.Builder().setActions(SUPPORTED_ACTIONS)
 				.setState(STATE_CONNECTING, 0, 1.0f).build();
 		setPlaybackState(state);
-		playerTask = prepareItem(i).onSuccess(pi -> playPreparedItem(i, pos));
+		playerTask = prepareItem(i).onSuccess(pi -> { if (pi != null) playPreparedItem(pi, pos); });
 	}
 
 	private void playPreparedItem(PlayableItem i, long pos) {
@@ -1375,7 +1376,7 @@ public class MediaSessionCallback extends MediaSessionCompat.Callback
 			setLastPlayed(i, pos);
 		}
 
-		if (i.isVideo() && (videoView != null)) engine.setVideoView(getVideoView());
+		eng.setVideoView(i.isVideo() ? getVideoView() : null);
 
 		playOnPrepared = true;
 		tryAnotherEngine = true;

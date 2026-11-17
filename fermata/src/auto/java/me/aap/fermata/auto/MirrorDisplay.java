@@ -516,6 +516,7 @@ public class MirrorDisplay {
 		final MediaProjection mp;
 		final VirtualDisplay vd;
 		final WeakReference<MirrorDisplay> mdRef;
+		private boolean closed;
 
 		Session(MediaProjection mp, MirrorDisplay md) {
 			this.mp = mp;
@@ -532,14 +533,20 @@ public class MirrorDisplay {
 
 		@Override
 		public void onStop() {
-			close();
 			var md = mdRef.get();
-			if (md == null) return;
+			if (md == null || !md.session.isDoneNotFailed() || md.session.getOrThrow() != this) {
+				close();
+				return;
+			}
 			Log.i("Media projection stopped");
+			var surface = md.sc;
 			md.cleanUp();
+			if (surface != null) drawMsg(surface, R.string.mirror_projection_stopped);
 		}
 
 		void close() {
+			if (closed) return;
+			closed = true;
 			mp.unregisterCallback(this);
 			vd.release();
 			mp.stop();

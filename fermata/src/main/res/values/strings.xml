@@ -192,6 +192,24 @@
     <string name="display_subtitles">Display subtitles</string>
     <string name="preferred_sub_lang">Preferred subtitles languages</string>
     <string name="preferred_sub_key">Prefer subtitles with keywords</string>
+    <string name="subtitle_online_search">Find subtitles online</string>
+    <string name="subtitle_online_search_phone">Find subtitles online on phone</string>
+    <string name="subtitle_online_use_phone">Open Fermata on your phone and use Find subtitles online for the active video.</string>
+    <string name="subtitle_choose_track">Choose subtitle track</string>
+    <string name="subtitle_generate">Generate captions</string>
+    <string name="subtitle_generate_phone">Generate captions on phone</string>
+    <string name="subtitle_document_load_phone">Load subtitle file on phone</string>
+    <string name="subtitle_generation_started">Preparing captions. Playback resumes when the first audio is ready.</string>
+    <string name="subtitle_document_load">Load external subtitles</string>
+    <string name="subtitle_document_phone">Open Fermata on your phone and select Load external subtitles for the active video.</string>
+    <string name="subtitle_document_error">Could not load subtitles: %s</string>
+    <string name="subtitle_document_type">Select an SRT or VTT file.</string>
+    <string name="subtitle_document_encoding">Legacy text encoding</string>
+    <string name="subtitle_stream_off">Turn off subtitles</string>
+    <string name="sub_gen_manage_models">Whisper models</string>
+    <string name="sub_gen_model_phone">Open Fermata on your phone to choose or download a Whisper model.</string>
+    <string name="sub_gen_error">Automatic subtitles unavailable: %s</string>
+    <string name="sub_gen_no_engine">Enable the ExoPlayer engine in Fermata settings.</string>
     <string name="select_subtitles">Select subtitles</string>
 
     <string name="sub_gen_buf">Buffer length</string>
@@ -200,7 +218,9 @@
     <string name="sub_gen_chunk_sub">Process the buffer in chunks of the specified duration</string>
     <string name="sub_gen_model">Model</string>
     <string name="sub_gen_translate">Translate</string>
-    <string name="sub_gen_use_gpu">Use GPU</string>
+    <string name="whisper_model_compact_english">Compact English</string>
+    <string name="whisper_model_turbo">Multilingual · High memory use</string>
+    <string name="sub_gen_use_gpu">Automatically select CPU or GPU</string>
     <string name="sub_gen_single">Single segment</string>
     <string name="sub_gen_single_sub">Transcribe the entire chunk as a single segment</string>
     <string name="sub_gen_downloading">Please wait while the model is downloaded.</string>
@@ -373,6 +393,9 @@
     <string name="prefs_not_found">No preferences found</string>
     <string name="open_log">Open log file</string>
     <string name="unlock_phone_and_grant">Unlock the phone and grant the requested permissions.</string>
+    <string name="mirror_choose_apps">Choose mirrored apps</string>
+    <string name="mirror_save_apps">Save app shortcuts</string>
+    <string name="mirror_projection_stopped">Screen sharing stopped. Unlock your phone, reopen Fermata Mirror, and allow screen sharing.</string>
     <string name="screen_capture_rejected">Screen capture request rejected.</string>
     <string name="accessibility_dsc">The accessibility service is used by Fermata Mirror to simulate touch screen events.</string>
     <string name="media_projection_action_text">Start now</string>
@@ -397,4 +420,11 @@
     <string name="err_failed_to_download">Failed to download %1$s</string>
     <string name="err_no_audio_record_perm">Audio recording permission is not granted</string>
     <string name="err_failed_start_service">Failed to start service: %s</string>
+    <string name="show_fullscreen_video">Show full-screen video</string>
+    <string name="exit_fullscreen_video">Exit full-screen video</string>
+    <string name="playback_volume_percent">Volume · %1$d%%</string>
+    <string name="playback_volume_value">%1$d%%</string>
+    <string name="playback_volume_unavailable">Playback volume is unavailable for this output.</string>
+    <string name="player_appearance">Appearance</string>
+    <string name="player_options">Playback options</string>
 </resources>

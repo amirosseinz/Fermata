@@ -24,16 +24,19 @@ public final class AudioTranscriptProcessor implements AudioProcessor {
 	private final int bufLen;
 	private final int chunkLen;
 	private AudioFormat audioFormat = AudioFormat.NOT_SET;
-	private RingBuffer buffer = new RingBuffer();
+	private volatile RingBuffer buffer = new RingBuffer();
 	private int bytesPerSample;
 	private boolean isTranscribing;
+	private boolean transcriptionFailed;
+	private volatile boolean released;
+	private long streamPosition = androidx.media3.common.C.TIME_UNSET;
 
 	AudioTranscriptProcessor(ExoPlayerEngine.Accessor player, Transcriptor transcriptor,
 													 int bufLen, int chunkLen) {
 		this.player = player;
 		this.transcriptor = transcriptor;
 		this.chunkLen = Math.max(5, chunkLen);
-		this.bufLen = Math.max(2 * this.chunkLen, bufLen);
+		this.bufLen = Math.max(this.chunkLen, Math.min(30, bufLen));
 	}
 
 	boolean reconfigure(PreferenceStore ps) {
@@ -63,84 +66,119 @@ public final class AudioTranscriptProcessor implements AudioProcessor {
 		int len = buf.remaining();
 		if (len == 0) return;
 
-		for (; ; ) {
-			buffer.put(buf);
-			if (!isTranscribing && buffer.hasForTranscriptor()) {
-				Log.d("Starting transcription...");
-				isTranscribing = true;
-				App.get().getExecutor().submit(this::transcribe);
-			}
+		if (released) return;
+		buffer.put(buf);
+		if (transcriptionFailed) buffer.skipTranscription();
+		if (!transcriptionFailed && !isTranscribing && buffer.hasForTranscriptor()) {
+			isTranscribing = true;
+			App.get().getExecutor().submit(this::runTranscription);
+		}
+	}
 
-			if (buf.remaining() != len || buffer.hasForAudioSink()) return;
-
-			try {
-				Log.d("Ring buffer is full, waiting for free space: ", buffer);
-				wait();
-			} catch (InterruptedException err) {
-				Log.d(err);
-				return;
+	private void runTranscription() {
+		try {
+			transcribe();
+		} catch (RuntimeException | LinkageError err) {
+			synchronized (this) {
+				if (released) return;
+				Log.e(err, "Automatic subtitle transcription failed");
+				transcriptionFailed = true;
+				isTranscribing = false;
+				buffer.skipTranscription();
+				notifyAll();
 			}
+			App.get().run(() -> {
+				player.drainBuffer();
+				var ctx = App.get();
+				android.widget.Toast.makeText(ctx, ctx.getString(
+						me.aap.fermata.R.string.sub_gen_error, err.getLocalizedMessage()),
+						android.widget.Toast.LENGTH_LONG).show();
+			});
 		}
 	}
 
 	private void transcribe() {
 		for (; ; ) {
-			var ringBuf = buffer;
+			RingBuffer ringBuf;
 			ByteBuffer buf;
 
+			int sampleBytes;
+			int channels;
+			int sampleRate;
+			long timeOffset;
+			boolean finish;
 			synchronized (this) {
+				if (released || transcriptionFailed) {
+					isTranscribing = false;
+					notifyAll();
+					return;
+				}
+				ringBuf = buffer;
+				sampleBytes = bytesPerSample;
+				channels = audioFormat.channelCount;
+				sampleRate = audioFormat.sampleRate;
+				timeOffset = streamPosition == C.TIME_UNSET ? player.getSubGenTimeOffset() : streamPosition;
 				buf = ringBuf.getForTranscriptor();
+				finish = ringBuf.eos && !ringBuf.hasForTranscriptor() && !ringBuf.transcriptionEnded;
+				if (finish) ringBuf.transcriptionEnded = true;
 				notifyAll();
 				App.get().run(player::drainBuffer);
-				if (!buf.hasRemaining()) {
+				if (!buf.hasRemaining() && !finish) {
 					isTranscribing = false;
 					return;
 				}
 			}
 
-			boolean canTranscribe = transcriptor.read(buf, chunkLen, bytesPerSample,
-					audioFormat.channelCount, audioFormat.sampleRate) || ringBuf.eos;
-			if (!canTranscribe) continue;
-			synchronized (this) {
-				if (ringBuf != buffer) continue;
+			while (buf.hasRemaining()) {
+				boolean ready;
+				synchronized (this) {
+					if (ringBuf != buffer || released) break;
+					int position = buf.position();
+					ready = transcriptor.read(buf, chunkLen, sampleBytes, channels, sampleRate);
+					if (buf.position() == position && !ready)
+						throw new IllegalStateException("Whisper did not consume audio");
+				}
+				if (ready) publish(ringBuf, timeOffset);
 			}
-
-			var subtitles = transcriptor.transcribe(player.getSubGenTimeOffset());
-			if (subtitles.isEmpty()) continue;
-			var lang = transcriptor.getLang();
-
-			App.get().run(() -> {
-				if (ringBuf != buffer) return;
-				player.drainBuffer();
-				player.addSubtitles(lang, subtitles);
-			});
+			if (finish) publish(ringBuf, timeOffset);
+			synchronized (this) {
+				if (ringBuf == buffer) {
+					ringBuf.commitTranscription();
+					notifyAll();
+				}
+			}
+			App.get().run(player::drainBuffer);
 		}
+	}
+
+	private void publish(RingBuffer ringBuf, long timeOffset) {
+		synchronized (this) {
+			if (ringBuf != buffer || released) return;
+		}
+		var subtitles = transcriptor.transcribe(timeOffset);
+		if (subtitles.isEmpty()) return;
+		var lang = transcriptor.getLang();
+		App.get().run(() -> {
+			if (ringBuf != buffer || released) return;
+			player.drainBuffer();
+			player.addSubtitles(lang, subtitles);
+		});
 	}
 
 	@Override
 	public synchronized void queueEndOfStream() {
 		buffer.eos();
-		if (!isTranscribing && buffer.hasForTranscriptor()) {
+		if (!transcriptionFailed && !released && !isTranscribing) {
 			Log.d("Starting transcription...");
 			isTranscribing = true;
-			App.get().getExecutor().submit(this::transcribe);
+			App.get().getExecutor().submit(this::runTranscription);
 		}
 	}
 
 	@NonNull
 	@Override
 	public synchronized ByteBuffer getOutput() {
-		if (buffer.readInterrupt()) return EMPTY_BUFFER;
-		while (!buffer.hasForAudioSink() && isTranscribing && buffer.hasForTranscriptor()) {
-			try {
-				Log.d("Waiting for audio buffer: ", buffer);
-				wait();
-			} catch (InterruptedException err) {
-				Log.e(err);
-				return EMPTY_BUFFER;
-			}
-		}
-		return buffer.getForAudioSink();
+		return released ? EMPTY_BUFFER : buffer.getForAudioSink();
 	}
 
 	@Override
@@ -154,7 +192,11 @@ public final class AudioTranscriptProcessor implements AudioProcessor {
 	}
 
 	@Override
-	public synchronized void flush() {
+	public synchronized void flush(StreamMetadata metadata) {
+		long start = metadata.positionOffsetUs;
+		var source = player.getSource();
+		streamPosition = start == C.TIME_UNSET || source == null ? C.TIME_UNSET :
+				Math.max(0, start / 1000 - source.getOffset());
 		transcriptor.reset();
 		buffer = buffer.clear();
 	}
@@ -166,7 +208,10 @@ public final class AudioTranscriptProcessor implements AudioProcessor {
 		audioFormat = AudioFormat.NOT_SET;
 	}
 
-	void release() {
+	synchronized void release() {
+		if (released) return;
+		released = true;
+		notifyAll();
 		transcriptor.release();
 	}
 
@@ -179,7 +224,9 @@ public final class AudioTranscriptProcessor implements AudioProcessor {
 		private final int chunkLen;
 		private final int bytesPerSecond;
 		private boolean eos;
-		private byte readInterrupt;
+		private boolean transcriptionEnded;
+		private long transcribedPosition;
+		private boolean bypass;
 
 		public RingBuffer() {
 			buffer = ByteBuffer.allocateDirect(0);
@@ -193,7 +240,7 @@ public final class AudioTranscriptProcessor implements AudioProcessor {
 			bytesPerSecond = format.sampleRate * format.bytesPerFrame;
 			this.bufLen = bufLen * bytesPerSecond;
 			this.chunkLen = chunkLen * bytesPerSecond;
-			int cap = Math.max(2 * this.bufLen, 180 * bytesPerSecond);
+			int cap = 2 * this.bufLen + this.chunkLen;
 			buffer = reuse != null && reuse.buffer.capacity() == cap ? reuse.buffer :
 					ByteBuffer.allocateDirect(cap).order(ByteOrder.nativeOrder());
 		}
@@ -210,12 +257,22 @@ public final class AudioTranscriptProcessor implements AudioProcessor {
 
 		public boolean hasForTranscriptor() {
 			var available = writer.pos - transcriptorReader.pos;
-			return available >= chunkLen || (eos && available > 0);
+			return available > 0 && (available >= chunkLen || eos);
+		}
+
+		void skipTranscription() {
+			bypass = true;
+			transcriptorReader.pos = writer.pos;
+			commitTranscription();
+		}
+
+		void commitTranscription() {
+			transcribedPosition = transcriptorReader.pos;
 		}
 
 		public boolean hasForAudioSink() {
-			long available = transcriptorReader.pos - audioSinkReader.pos;
-			return available >= bufLen || (eos && transcriptorReader.pos > audioSinkReader.pos);
+			long available = transcribedPosition - audioSinkReader.pos;
+			return available > 0 && (bypass || available >= bufLen || eos);
 		}
 
 
@@ -224,12 +281,8 @@ public final class AudioTranscriptProcessor implements AudioProcessor {
 		}
 
 		public ByteBuffer getForAudioSink() {
-			return hasForAudioSink() ? get(audioSinkReader, bytesPerSecond) : EMPTY_BUFFER;
-		}
-
-		public boolean readInterrupt() {
-			return !eos && (++readInterrupt % 2 == 0) &&
-					(audioSinkReader.pos + buffer.capacity() - writer.pos != 0);
+			return hasForAudioSink() ? get(audioSinkReader,
+					(int) Math.min(bytesPerSecond, transcribedPosition - audioSinkReader.pos)) : EMPTY_BUFFER;
 		}
 
 		private ByteBuffer get(Accessor reader, int maxLen) {

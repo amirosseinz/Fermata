@@ -136,7 +136,7 @@ public class MediaEngineManager implements PreferenceStore.Listener {
 		PlayableItem i = current.getSource();
 		current.close();
 
-		if (i.getPrefs().getBooleanPref(SubGenAddon.ENABLED) && isExoPlayerSupported()) {
+		if (id != MEDIA_ENG_EXO && i.getPrefs().getBooleanPref(SubGenAddon.ENABLED) && isExoPlayerSupported()) {
 			return create(exoPlayer, null, i, listener);
 		}
 		if ((vlcPlayer != null) && (id != MEDIA_ENG_VLC)) {
