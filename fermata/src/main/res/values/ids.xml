@@ -150,4 +150,5 @@
     <item name="control_fullscreen" type="id" />
     <item name="playback_volume" type="id" />
     <item name="player_appearance" type="id" />
+    <item name="nav_nearby_screen" type="id" />
 </resources>
