@@ -13,6 +13,7 @@ import static me.aap.utils.ui.view.NavBarItem.create;
 import static me.aap.utils.ui.view.NavBarView.POSITION_LEFT;
 import static me.aap.utils.ui.view.NavBarView.POSITION_RIGHT;
 
+import android.content.Intent;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.view.View;
@@ -27,6 +28,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 
+import me.aap.fermata.mirror.NearbyScreenActivity;
 import me.aap.fermata.BuildConfig;
 import me.aap.fermata.FermataApplication;
 import me.aap.fermata.R;
@@ -243,6 +245,7 @@ public class NavBarMediator extends PrefNavBarMediator
 
 			b.addItem(R.id.nav_about, R.drawable.about, R.string.about);
 			b.addItem(R.id.settings_fragment, R.drawable.settings, R.string.settings);
+			if (!a.getAppActivity().isCarActivity()) b.addItem(R.id.nav_nearby_screen, R.string.screen_nearby);
 			if (BuildConfig.AUTO) b.addItem(R.id.nav_donate, R.drawable.coffee, R.string.donate);
 			b.addItem(R.id.nav_exit, R.drawable.exit, a.isCarActivityNotMirror() ? R.string.restart : R.string.exit);
 		});
@@ -273,6 +276,11 @@ public class NavBarMediator extends PrefNavBarMediator
 			return true;
 		} else if (itemId == R.id.settings_fragment) {
 			MainActivityDelegate.get(item.getContext()).showFragment(R.id.settings_fragment);
+			return true;
+		} else if (itemId == R.id.nav_nearby_screen) {
+			var a = MainActivityDelegate.get(item.getContext());
+			if (!a.getAppActivity().isCarActivity()) a.getContext().startActivity(
+					new Intent(a.getContext(), NearbyScreenActivity.class));
 			return true;
 		} else if (itemId == R.id.nav_exit) {
 			MainActivityDelegate a = MainActivityDelegate.get(item.getContext());
