@@ -1,72 +1,48 @@
-## !!!Be aware of scam!!! The sites like https :// fermata-auto . com  are 100% scam. This app is free and opensource!
+# Fermata Media Player
 
+Fermata is a GPL-3.0 Android player for local video and audio, playlists, and IPTV. This fork adds better subtitle handling, offline captions, playback controls, and local screen sharing.
 
-## Fermata Media Player
-[![Download the latest APK](https://img.shields.io/github/v/release/AndreyPavlenko/Fermata?label=Download%20APK&logo=github&style=for-the-badge)](https://github.com/AndreyPavlenko/Fermata/releases/latest)
+[Releases for this fork](https://github.com/amirosseinz/Fermata/releases) · [Original Fermata project](https://github.com/AndreyPavlenko/Fermata)
 
-## About
-Fermata Media Player is a free, open source audio, video and TV player with a simple and intuitive interface. It is focused on playing media files organized in folders and playlists.
+## What's new in this fork
 
-Supported features:
+| Feature | What it does |
+| --- | --- |
+| **Persian and Unicode subtitles** | Improves right-to-left layout, subtitle placement, cue timing, and handling of Unicode and legacy text encodings. |
+| **External and online subtitles** | Load SRT or WebVTT through Android's file picker, use matching sidecar files, or search OpenSubtitles from the phone. OpenSubtitles requires an API key. |
+| **Offline Whisper captions** | Choose and download verified models, then generate captions on-device through ExoPlayer. The model manager offers compact English and multilingual options. CPU and Vulkan support depend on the build and device. |
+| **Playback and Android Auto controls** | Adds full-screen controls, per-item volume, and buffering adjustments. Keeps the active car video surface attached when unrelated views change. |
+| **Nearby Screen** | Share screen video between two Android phones running Fermata on the same local network. Start **Receive an Android screen** on one phone, then **Share this Android screen** on the other and enter the pairing code. |
+| **Experimental iPhone AirPlay** | Receive iPhone screen video inside Fermata over the local network. On Android Auto, the receiver requires the host to affirm Park and allow video. |
 
-* Play media files organized in folders
-* IPTV addon with support for XMLTV EPG and Catchup
-* Remembers the last played track and position for each folder
-* Support for favorites and playlists
-* Support for CUE and M3U playlists
-* Support for bookmarks
-* Audio effects: Equalizer, Bass/Volume Boost and Virtualizer
-* Configure audio effects for individual tracks and folders
-* Configure playback speed for individual tracks and folders
-* Customizable titles and subtitles
-* Support for Android Auto
-* Support for Android TV
-* Show favorites and playlists on Android TV home screen
-* Pluggable media engines: MediaPlayer, ExoPlayer and VLC
-* Video player with support for subtitles and audio streams (VLC Engine only)
+Fermata also retains folder and playlist playback, CUE and M3U support, favourites, bookmarks, playback position and speed settings, audio effects, and the MediaPlayer, ExoPlayer, and VLC engines. The IPTV add-on supports XMLTV programme listings and catch-up. Android TV and Android Auto support depend on the build and host.
 
-## Building the project
-* Download and install the latest Android SDK or Android Studio from https://developer.android.com/studio/
-* Set the environment variable ANDROID_SDK_ROOT pointing to the SDK directory
+## Getting started
+
+The v7 APK targets ARM64 devices running Android 9 or later. Its launcher label is **Fermata Auto**. Download APKs from this fork's GitHub releases or the original project's GitHub releases. Fermata is free. Avoid third-party sites that imitate the project.
+
+- **External subtitles** · Start a video on the phone. Open **Subtitles → Load external subtitles** and choose an SRT or VTT file.
+- **Automatic captions** · Enable ExoPlayer and open **Whisper models** on the phone to download a model. Choose **Generate captions** during playback. Model downloads require internet access.
+- **iPhone mirroring** · Open **Nearby Screen → Mirror iPhone (AirPlay)** on the receiving Android phone. Connect the devices to a local network that allows discovery. On the iPhone, open **Control Centre → Screen Mirroring**, choose **Fermata**, and enter the displayed PIN. On a compatible parked Android Auto host, use **Fermata Auto → Menu → Mirror iPhone (AirPlay)**.
+
+### AirPlay verification
+
+The receiver handles H.264 screen video. The ARM64 Android Auto build, host tests, and native loopback checks passed. Live iPhone pairing, on-device playback, and physical head-unit behaviour remain unverified. A head unit with unavailable or restricted driving status leaves the car receiver off. Wireless Android Auto can place the phone on a separate network and prevent discovery.
+
+## Build from source
+
+Use JDK 21, Android SDK and Build Tools 36, NDK `29.0.14206865`, and CMake `4.1.2`. Set `ANDROID_SDK_ROOT` to your SDK directory.
+
 ```bash
-export ANDROID_SDK_ROOT=<path to android SDK>
-```
-
-### Clone the repository
-```bash
-git clone --recurse-submodules https://github.com/AndreyPavlenko/Fermata.git
+git clone --recurse-submodules https://github.com/amirosseinz/Fermata.git
 cd Fermata
+./gradlew :fermata:packageAutoReleaseUniversalApk -PABI=arm64-v8a
 ```
 
-### Build AAB
-```bash
-./gradlew bundleAutoRelease -PAPP_ID_SFX=.type.your.pkg.sfx.here
-find $PWD -name *.aab
-```
+For the optional AirPlay receiver, supply `-PAIRPLAY_SOURCE=/path/to/airplay-dependencies` and `-PAIRPLAY_OPENSSL=/path/to/android-openssl`. The native receiver instructions cover the pinned dependencies, pairing patch, and loopback fixture. [AirPlay build instructions](fermata/src/main/cpp/airplay/README.md)
 
-### Build APK
-```bash
-./gradlew bundleAutoRelease -PAPP_ID_SFX=.type.your.pkg.sfx.here
-find $PWD -name *.apk
-```
+## Project and licence
 
-### Building in docker
-```bash
-docker run -ti --name Fermata andreypavlenko/fermata
-```
-Enter the requested key alias and password, when prompted.
-Build the required package using the above commands.
-To copy the built package to the host machine, open a new terminal and run:
-```bash
-docker cp Fermata:/home/mobiledevops/Fermata/fermata/build/outputs/bundle/autoRelease/ .
-```
+This repository is a fork of [Andrey Pavlenko's Fermata](https://github.com/AndreyPavlenko/Fermata). The application source is licensed under [GPL-3.0](LICENSE).
 
-
-## Donation
-If you like the application, please consider making a donation:
-
-[PayPal](https://www.paypal.com/donate/?hosted_button_id=NP5Q3YDSCJ98N)
-
-[CloudTips](https://pay.cloudtips.ru/p/a03a73da)
-
-[Yandex Money](https://money.yandex.ru/to/410014661137336)
+Support the original project through [PayPal](https://www.paypal.com/donate/?hosted_button_id=NP5Q3YDSCJ98N), [CloudTips](https://pay.cloudtips.ru/p/a03a73da), or [Yandex Money](https://money.yandex.ru/to/410014661137336).
