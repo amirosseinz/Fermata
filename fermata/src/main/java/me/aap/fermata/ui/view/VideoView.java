@@ -31,8 +31,10 @@ import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.PorterDuff;
 import android.graphics.Typeface;
+import android.text.Layout;
 import android.text.SpannableString;
 import android.text.StaticLayout;
+import android.text.TextDirectionHeuristics;
 import android.text.TextPaint;
 import android.text.TextUtils;
 import android.text.style.ForegroundColorSpan;
@@ -537,12 +539,11 @@ public class VideoView extends FrameLayout
 			return canvasHeight > canvasWidth ? s * canvasHeight / canvasWidth : s;
 		}
 
-		static TextPaint paint(Paint.Align align) {
+		static TextPaint paint() {
 			TextPaint paint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
 			paint.setColor(Color.WHITE);
 			paint.setTypeface(Typeface.DEFAULT);
 			paint.setElegantTextHeight(true);
-			paint.setTextAlign(align);
 			return paint;
 		}
 
@@ -552,36 +553,35 @@ public class VideoView extends FrameLayout
 			return fromHtml(text, FROM_HTML_MODE_LEGACY);
 		}
 
-		static StaticLayout layout(CharSequence text, TextPaint paint, int width) {
+		static StaticLayout layout(CharSequence text, TextPaint paint, int width,
+				Layout.Alignment alignment) {
 			return StaticLayout.Builder.obtain(text, 0, text.length(), paint, width).setMaxLines(10)
+					.setAlignment(alignment).setTextDirection(TextDirectionHeuristics.FIRSTSTRONG_LTR)
 					.setEllipsize(TextUtils.TruncateAt.END).setIncludePad(true).build();
 		}
 
 		void draw(Canvas canvas, StaticLayout sl) {
-			float pad = 20f;
-			float w = 0f;
-			for (int i = 0, n = sl.getLineCount(); i < n; i++) {
-				w = Math.max(w, sl.getLineWidth(i));
+			float padding = Math.max(4f, sl.getPaint().getTextSize() / 4f);
+			float left = sl.getWidth();
+			float right = 0;
+			for (int i = 0; i < sl.getLineCount(); i++) {
+				left = Math.min(left, sl.getLineLeft(i));
+				right = Math.max(right, sl.getLineRight(i));
 			}
-			w = w / 2f + pad;
-			canvas.translate(0, -pad);
-			canvas.drawRoundRect(-w, -pad, w, sl.getHeight() + pad, pad, pad, bgPaint);
+			canvas.drawRoundRect(left - padding, -padding, right + padding,
+					sl.getHeight() + padding, padding, padding, bgPaint);
 			sl.draw(canvas);
 		}
 	}
 
 	private static final class GridDrawer extends SubDrawer {
 		private final String[] grid = new String[9];
-		private final TextPaint[] paint = new TextPaint[3];
+		private final TextPaint paint = paint();
 		private final float[] yoff = new float[]{1f, 0.5f, 0.f};
 
 
 		private GridDrawer(float textScale) {
 			super(textScale);
-			for (int i = 0; i < 3; i++) {
-				paint[i] =
-						paint(i == 0 ? Paint.Align.LEFT : i == 1 ? Paint.Align.CENTER : Paint.Align.RIGHT);
-			}
 		}
 
 		@Override
@@ -598,8 +598,13 @@ public class VideoView extends FrameLayout
 			var ch = canvas.getHeight();
 			var cw = canvas.getWidth();
 			var ts = textSize(ch, cw);
-			var x = new int[]{0, cw / 2, cw};
-			var y = new int[]{ch, ch / 2, 0};
+			var inset = Math.max(8, Math.round(ts / 2f));
+			if (cw <= 2 * inset || ch <= 2 * inset) return;
+			var x = new int[]{inset, cw / 2, cw - inset};
+			var y = new int[]{ch - inset, ch / 2, inset};
+			var alignment = new Layout.Alignment[]{Layout.Alignment.ALIGN_NORMAL,
+					Layout.Alignment.ALIGN_CENTER, Layout.Alignment.ALIGN_NORMAL};
+			paint.setTextSize(ts);
 
 			for (int i = 0, g = 0; i < 3; i++, g += 3) {
 				var l = grid[g] != null;
@@ -631,10 +636,13 @@ public class VideoView extends FrameLayout
 				for (int j = 0; j < 3; j++) {
 					if (w[j] == 0) continue;
 					var t = text(grid[g + j]);
-					paint[j].setTextSize(ts);
-					var sl = layout(t, paint[j], w[j]);
+					int width = Math.max(1, w[j] - 2 * inset);
+					boolean rtl = TextDirectionHeuristics.FIRSTSTRONG_LTR.isRtl(t, 0, t.length());
+					var align = (j == 1 || ((j == 2) == rtl)) ? alignment[j] :
+							Layout.Alignment.ALIGN_OPPOSITE;
+					var sl = layout(t, paint, width, align);
 					canvas.save();
-					canvas.translate(x[j], y[i] - sl.getHeight() * yoff[i]);
+					canvas.translate(x[j] - j * width / 2f, y[i] - sl.getHeight() * yoff[i]);
 					draw(canvas, sl);
 					canvas.restore();
 				}
@@ -650,7 +658,7 @@ public class VideoView extends FrameLayout
 
 		DoubleSubDrawer(float textScale) {
 			super(textScale);
-			paint = paint(Paint.Align.CENTER);
+			paint = paint();
 		}
 
 		@Override
@@ -666,7 +674,6 @@ public class VideoView extends FrameLayout
 				center = false;
 				translation = t;
 			} else {
-				center = true;
 				var t = (text == null) ? null : text.getText();
 				var trans = (text == null) ? null : text.getTranslation();
 				var c = position != SubGrid.Position.BOTTOM_CENTER;
@@ -705,22 +712,24 @@ public class VideoView extends FrameLayout
 
 			if (start != end) {
 				var st = new SpannableString(sub);
-				st.setSpan(new ForegroundColorSpan(Color.RED), start, end, SPAN_EXCLUSIVE_EXCLUSIVE);
+				st.setSpan(new ForegroundColorSpan(0xFFFFD782), start, end, SPAN_EXCLUSIVE_EXCLUSIVE);
 				sub = st;
 			}
 
 			var ch = canvas.getHeight();
 			var cw = canvas.getWidth();
-			var x = cw / 2f;
+			var inset = Math.max(8, Math.round(textSize(ch, cw) / 2f));
+			if (cw <= 2 * inset || ch <= 2 * inset) return;
+			var width = cw - 2 * inset;
 
 			if (center) {
 				float size = (ch > cw) ? cw / 10f : ch / 5f;
 				for (; ; ) {
 					paint.setTextSize(size);
-					var sl = layout(sub, paint, cw);
+					var sl = layout(sub, paint, width, Layout.Alignment.ALIGN_CENTER);
 					var sh = sl.getHeight();
 					if (sh < ch) {
-						canvas.translate(x, (ch - sl.getHeight()) / 2f);
+						canvas.translate(inset, (ch - sl.getHeight()) / 2f);
 						draw(canvas, sl);
 						break;
 					} else {
@@ -729,8 +738,8 @@ public class VideoView extends FrameLayout
 				}
 			} else {
 				paint.setTextSize(textSize(ch, cw));
-				var sl = layout(sub, paint, cw);
-				canvas.translate(x, ch - sl.getHeight());
+				var sl = layout(sub, paint, width, Layout.Alignment.ALIGN_CENTER);
+				canvas.translate(inset, ch - sl.getHeight() - inset);
 				draw(canvas, sl);
 			}
 		}
