@@ -2,13 +2,11 @@ package me.aap.fermata.mirror;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
 import android.graphics.Color;
 import android.media.projection.MediaProjectionManager;
-import android.net.Uri;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
 import android.os.Bundle;
@@ -33,11 +31,11 @@ import android.widget.Toast;
 import java.util.ArrayList;
 import java.util.UUID;
 
+import me.aap.fermata.BuildConfig;
 import me.aap.fermata.R;
 
 public final class NearbyScreenActivity extends Activity {
 	private static final int REQUEST_CAPTURE = 82;
-	private static final String AIRPLAY_RECEIVER = "io.github.jqssun.airplay";
 	private LinearLayout content;
 	private NsdManager nsd;
 	private ScreenReceiver receiver;
@@ -99,7 +97,8 @@ public final class NearbyScreenActivity extends Activity {
 		page(R.string.screen_nearby_intro);
 		button(R.string.screen_receive, this::receive);
 		button(R.string.screen_send, this::discover);
-		button(R.string.screen_airplay, this::openAirPlay);
+		if (BuildConfig.AIRPLAY_RECEIVER)
+			button(R.string.airplay_receive, () -> startActivity(new Intent(this, AirPlayActivity.class)));
 		button(R.string.screen_stop, () -> stopService(new Intent(this, ScreenCaptureService.class)));
 	}
 
@@ -351,28 +350,6 @@ public final class NearbyScreenActivity extends Activity {
 		} catch (RuntimeException e) {
 			message(R.string.screen_send_error);
 		}
-	}
-
-	private void openAirPlay() {
-		var intent = getPackageManager().getLaunchIntentForPackage(AIRPLAY_RECEIVER);
-		if (intent != null) {
-			try {
-				startActivity(intent);
-				return;
-			} catch (ActivityNotFoundException ignored) {}
-		}
-		new AlertDialog.Builder(this)
-				.setTitle(R.string.screen_airplay)
-				.setMessage(R.string.screen_airplay_companion)
-				.setNegativeButton(android.R.string.cancel, null)
-				.setPositiveButton(R.string.screen_airplay_get, (d, i) -> {
-					try {
-						startActivity(new Intent(Intent.ACTION_VIEW,
-								Uri.parse("https://f-droid.org/packages/" + AIRPLAY_RECEIVER + "/")));
-					} catch (ActivityNotFoundException e) {
-						message(R.string.screen_airplay_no_browser);
-					}
-				}).show();
 	}
 
 	private void message(int res) {

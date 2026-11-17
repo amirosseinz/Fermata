@@ -48,6 +48,7 @@ import com.google.android.apps.auto.sdk.CarUiController;
 
 import me.aap.fermata.R;
 import me.aap.fermata.media.service.FermataMediaServiceConnection;
+import me.aap.fermata.mirror.AirPlayPanel;
 import me.aap.fermata.ui.activity.FermataActivity;
 import me.aap.fermata.ui.activity.MainActivityDelegate;
 import me.aap.fermata.ui.view.MediaItemListView;
@@ -71,6 +72,8 @@ public class MainCarActivity extends CarActivity implements FermataActivity {
 			(FutureSupplier<MainActivityDelegate>) NO_DELEGATE;
 	private CarEditText editText;
 	private TextWatcher textWatcher;
+	private AirPlayPanel airPlay;
+	private AirPlayCarPolicy airPlayPolicy;
 
 	@NonNull
 	@Override
@@ -123,7 +126,14 @@ public class MainCarActivity extends CarActivity implements FermataActivity {
 	}
 
 	@Override
+	public void onPause() {
+		closeAirPlay();
+		super.onPause();
+	}
+
+	@Override
 	public void onStop() {
+		closeAirPlay();
 		super.onStop();
 		getActivityDelegate().onSuccess(d -> d.getMediaSessionCallback().onCarScreenLeft());
 	}
@@ -131,10 +141,38 @@ public class MainCarActivity extends CarActivity implements FermataActivity {
 	@Override
 	@SuppressWarnings("unchecked")
 	public void onDestroy() {
+		closeAirPlay();
 		super.onDestroy();
 		getActivityDelegate().onSuccess(MainActivityDelegate::onActivityDestroy)
 				.thenRun(() -> ActivityDelegate.setContextToDelegate(null));
 		delegate = (FutureSupplier<MainActivityDelegate>) NO_DELEGATE;
+	}
+
+	@Override
+	public void showAirPlay() {
+		if (airPlay != null || !delegate.isDoneNotFailed()) return;
+		var view = findViewById(R.id.main_activity);
+		if (!(view instanceof ViewGroup host)) return;
+		delegate.getOrThrow().getMediaSessionCallback().onPause();
+		airPlay = new AirPlayPanel(getContext(), this::closeAirPlay);
+		airPlay.setElevation(32 * getResources().getDisplayMetrics().density);
+		host.addView(airPlay, new ConstraintLayout.LayoutParams(-1, -1));
+		try {
+			airPlayPolicy = new AirPlayCarPolicy(getContext(), airPlay);
+		} catch (RuntimeException e) {
+			Log.w("Unable to read host video restrictions: ", e);
+		}
+	}
+
+	private void closeAirPlay() {
+		if (airPlayPolicy != null) {
+			airPlayPolicy.close();
+			airPlayPolicy = null;
+		}
+		if (airPlay == null) return;
+		airPlay.close();
+		if (airPlay.getParent() instanceof ViewGroup parent) parent.removeView(airPlay);
+		airPlay = null;
 	}
 
 	@Override
@@ -251,6 +289,10 @@ public class MainCarActivity extends CarActivity implements FermataActivity {
 
 	@Override
 	public boolean onKeyUp(int keyCode, KeyEvent keyEvent) {
+		if (keyCode == KEYCODE_BACK && airPlay != null) {
+			closeAirPlay();
+			return true;
+		}
 		Log.i(keyEvent);
 		MainActivityDelegate d = delegate.peek();
 		if (d == null) return super.onKeyUp(keyCode, keyEvent);

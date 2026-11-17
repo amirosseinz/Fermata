@@ -450,8 +450,12 @@
     <string name="screen_already_sharing">A screen is already being shared.</string>
     <string name="screen_stop">Stop sharing</string>
     <string name="screen_stop_receiver">Stop receiving</string>
-    <string name="screen_airplay">Open separate AirPlay receiver</string>
-    <string name="screen_airplay_companion">iPhone and iPad mirroring uses the separate AirPlay Receiver app and displays there.</string>
-    <string name="screen_airplay_get">Open app listing</string>
-    <string name="screen_airplay_no_browser">No browser is available.</string>
+    <string name="airplay_receive">Mirror iPhone (AirPlay)</string>
+    <string name="airplay_starting">Starting Fermata AirPlay…</string>
+    <string name="airplay_listening">Choose Fermata in iPhone Screen Mirroring. PIN %1$s</string>
+    <string name="airplay_connected">iPhone screen · video only</string>
+    <string name="airplay_ended">iPhone disconnected. Fermata is still available.</string>
+    <string name="airplay_parked_only">AirPlay needs confirmation from Android Auto that the car is parked and video is allowed.</string>
+    <string name="airplay_error">AirPlay could not start. Verify that local network discovery is available.</string>
+    <string name="airplay_busy">Fermata is already receiving or stopping AirPlay. Close this screen and try again.</string>
 </resources>
