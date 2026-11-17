@@ -431,6 +431,16 @@ public class StreamEngine implements MediaEngine, MediaEngine.Listener {
 	}
 
 	@Override
+	public boolean supportsPlaybackVolume() {
+		return eng.supportsPlaybackVolume();
+	}
+
+	@Override
+	public boolean setPlaybackVolume(int percent) {
+		return eng.setPlaybackVolume(percent);
+	}
+
+	@Override
 	public void mute(Context ctx) {
 		eng.mute(ctx);
 	}

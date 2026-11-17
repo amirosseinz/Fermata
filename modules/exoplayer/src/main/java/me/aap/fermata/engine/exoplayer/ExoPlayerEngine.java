@@ -1,7 +1,6 @@
 package me.aap.fermata.engine.exoplayer;
 
 import static java.util.Collections.emptyList;
-import static java.util.Objects.requireNonNull;
 import static me.aap.utils.async.Completed.completed;
 import static me.aap.utils.async.Completed.completedNull;
 import static me.aap.utils.async.Completed.completedVoid;
@@ -21,7 +20,6 @@ import androidx.media3.common.PlaybackParameters;
 import androidx.media3.common.Player;
 import androidx.media3.common.Timeline;
 import androidx.media3.common.VideoSize;
-import androidx.media3.common.util.HandlerWrapper;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
 import androidx.media3.datasource.DataSource;
@@ -29,6 +27,7 @@ import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.datasource.cronet.CronetDataSource;
 import androidx.media3.datasource.cronet.CronetUtil;
+import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.audio.AudioSink;
@@ -39,7 +38,6 @@ import androidx.media3.exoplayer.source.MediaSource;
 
 import org.chromium.net.CronetEngine;
 
-import java.lang.reflect.Field;
 import java.net.CookieHandler;
 import java.net.CookieManager;
 import java.net.CookiePolicy;
@@ -98,13 +96,13 @@ public class ExoPlayerEngine extends MediaEngineBase implements Player.Listener 
 	private final Accessor accessor = new Accessor(this);
 	private final Timeline.Period period = new Timeline.Period();
 	private final PendingLoadAudioProcessor audioProc = new PendingLoadAudioProcessor(accessor);
+	private final PlaybackGainProcessor playbackGain = new PlaybackGainProcessor();
 	private final ExoPlayer player;
 	private final AudioEffects audioEffects;
 	private volatile PlayableItem source;
 	private boolean preparing;
 	private boolean buffering;
 	private boolean isHls;
-	private Runnable drainBuffer;
 
 	public ExoPlayerEngine(Context ctx, Listener listener) {
 		super(listener);
@@ -127,29 +125,18 @@ public class ExoPlayerEngine extends MediaEngineBase implements Player.Listener 
 								.setPcmBufferMultiplicationFactor(16)
 								.setOffloadBufferDurationUs(120_000_000).build())
 						.setAudioProcessorChain(
-								new DefaultAudioSink.DefaultAudioProcessorChain(audioProc)).build();
+								new DefaultAudioSink.DefaultAudioProcessorChain(audioProc, playbackGain)).build();
 			}
-		}).setMediaSourceFactory(msFactory).build();
+		}).setMediaSourceFactory(msFactory)
+				.setLoadControl(new DefaultLoadControl.Builder()
+						// Preserve local playback defaults. Let remote streams recover more data
+						// after a network stall before restarting playback.
+						.setBufferDurationsMsForStreaming(50_000, 60_000, 1_000, 4_500)
+						.build())
+				.build();
 		player.addListener(this);
 		audioEffects = AudioEffects.create(0, player.getAudioSessionId());
 
-		try {
-			Field f = player.getClass().getDeclaredField("internalPlayer");
-			f.setAccessible(true);
-			Object internal = requireNonNull(f.get(player));
-			f = internal.getClass().getDeclaredField("handler");
-			f.setAccessible(true);
-			var handler = (HandlerWrapper) requireNonNull(f.get(internal));
-			drainBuffer = () -> {
-				try {
-					handler.sendEmptyMessage(2 /*MSG_DO_SOME_WORK*/);
-				} catch (Exception err) {
-					Log.w(err);
-				}
-			};
-		} catch (Exception err) {
-			Log.w(err);
-		}
 	}
 
 	@Override
@@ -177,8 +164,8 @@ public class ExoPlayerEngine extends MediaEngineBase implements Player.Listener 
 	@Override
 	public void start() {
 		player.setPlayWhenReady(true);
-		listener.onEngineStarted(this);
 		started();
+		listener.onEngineStarted(this);
 	}
 
 	@Override
@@ -228,20 +215,17 @@ public class ExoPlayerEngine extends MediaEngineBase implements Player.Listener 
 		return pos - source.getOffset();
 	}
 
-	protected long subSchedulerClock() {
-		return pos();
-	}
-
 	void syncSub(boolean restart) {
-		syncSub(subSchedulerClock(), speed(), restart);
+		syncSub(pos(), speed(), restart);
 	}
 
 	@Override
 	public void setPosition(long position) {
 		if (source == null) return;
 		var pos = source.getOffset() + position;
+		accessor.clearSubtitles();
+		accessor.subGenTimeOffset = position;
 		player.seekTo(pos);
-		accessor.setSubGenTimeOffset(this);
 		syncSub(true);
 	}
 
@@ -288,7 +272,9 @@ public class ExoPlayerEngine extends MediaEngineBase implements Player.Listener 
 		var src = getSource();
 		if (src == null) return completedVoid();
 		var ps = src.getPrefs();
-		if (!ps.getBooleanPref(SubGenAddon.ENABLED)) return super.selectSubtitleStream();
+		var id = ps.getSubIdPref();
+		if (!ps.getSubEnabledPref() || !ps.getBooleanPref(SubGenAddon.ENABLED) ||
+				(id != null && id != Long.MIN_VALUE)) return super.selectSubtitleStream();
 		setCurrentSubtitleStream(new SubtitleStreamInfo.Generated(ps.getStringPref(SubGenAddon.LANG)));
 		if (BuildConfig.AUTO && !src.isVideo() && (listener instanceof MediaSessionCallback cb)) {
 			addSubtitleConsumer(cb);
@@ -303,7 +289,9 @@ public class ExoPlayerEngine extends MediaEngineBase implements Player.Listener 
 		var src = getSource();
 		if (src == null) return cur;
 		var ps = src.getPrefs();
-		if (!ps.getBooleanPref(SubGenAddon.ENABLED)) return cur;
+		var id = ps.getSubIdPref();
+		if (!ps.getSubEnabledPref() || !ps.getBooleanPref(SubGenAddon.ENABLED) ||
+				(id != null && id != Long.MIN_VALUE)) return cur;
 		setCurrentSubtitleStream(new SubtitleStreamInfo.Generated(ps.getStringPref(SubGenAddon.LANG)));
 		return super.getCurrentSubtitles();
 	}
@@ -378,12 +366,22 @@ public class ExoPlayerEngine extends MediaEngineBase implements Player.Listener 
 	public void close() {
 		stop();
 		super.close();
-		drainBuffer = null;
 		accessor.player = null;
 		player.removeListener(this);
 		player.release();
 		source = null;
 		if (audioEffects != null) audioEffects.release();
+	}
+
+	@Override
+	public boolean supportsPlaybackVolume() {
+		return true;
+	}
+
+	@Override
+	public boolean setPlaybackVolume(int percent) {
+		playbackGain.setPercent(percent);
+		return true;
 	}
 
 	@Override
@@ -406,13 +404,16 @@ public class ExoPlayerEngine extends MediaEngineBase implements Player.Listener 
 				buffering = false;
 				listener.onEngineBufferingCompleted(this);
 			}
-			if (preparing) {
+			syncSub(true);
+			var current = source;
+			if (preparing && current != null) {
 				preparing = false;
-				long off = source.getOffset();
+				long off = current.getOffset();
 				if (off > 0) player.seekTo(off);
 				accessor.setSubGenTimeOffset(this);
 				listener.onEnginePrepared(this);
-				var prefs = source.getPrefs();
+				if (source != current) return;
+				var prefs = current.getPrefs();
 				MediaEngine.selectMediaStream(prefs::getAudioIdPref, prefs::getAudioLangPref,
 						prefs::getAudioKeyPref, () -> completed(getAudioStreamInfo()),
 						this::setCurrentAudioStream);
@@ -454,7 +455,6 @@ public class ExoPlayerEngine extends MediaEngineBase implements Player.Listener 
 		void drainBuffer() {
 			assertMainThread();
 			if (player == null) return;
-			if (player.drainBuffer != null) player.drainBuffer.run();
 			player.syncSub(false);
 		}
 
@@ -468,9 +468,14 @@ public class ExoPlayerEngine extends MediaEngineBase implements Player.Listener 
 			return subGenTimeOffset;
 		}
 
-		private void sourceChanged(PlayableItem src) {
+		private void clearSubtitles() {
 			if (subStream != null) subStream.clear();
 			if (subTransStream != null) subTransStream.clear();
+		}
+
+		private void sourceChanged(PlayableItem src) {
+			clearSubtitles();
+			subGenTimeOffset = 0;
 
 			if (src == null) {
 				transLang = null;
@@ -492,6 +497,7 @@ public class ExoPlayerEngine extends MediaEngineBase implements Player.Listener 
 			App.get().run(() -> {
 				if (subStream == null) subStream = new Subtitles.Stream();
 				var added = subStream.add(subs);
+				drainBuffer();
 				if (transLang == null) return;
 				var src = getSource();
 				if (src == null) return;
@@ -580,7 +586,7 @@ public class ExoPlayerEngine extends MediaEngineBase implements Player.Listener 
 		}
 
 		private void setSubGenTimeOffset(ExoPlayerEngine eng) {
-			this.subGenTimeOffset = eng.subSchedulerClock();
+			this.subGenTimeOffset = eng.pos();
 		}
 
 		private SubGrid createSubStreamGrid() {

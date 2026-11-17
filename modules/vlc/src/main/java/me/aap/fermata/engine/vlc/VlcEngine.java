@@ -111,6 +111,11 @@ public class VlcEngine extends MediaEngineBase
 				}
 			}
 
+			if (source.isVideo() && isNetworkVideo(scheme)) {
+				// Keep more headroom for live streams without the app-wide 60-second delay.
+				media.addOption(source.isStream() ? ":network-caching=8000" : ":network-caching=4000");
+			}
+
 			media.addOption(":input-fast-seek");
 			switch (source.getPrefs().getHwAccelPref()) {
 				case HW_ACCEL_DECODING -> {
@@ -146,6 +151,13 @@ public class VlcEngine extends MediaEngineBase
 		}
 	}
 
+	private static boolean isNetworkVideo(@Nullable String scheme) {
+		return scheme != null && switch (scheme.toLowerCase(java.util.Locale.ROOT)) {
+			case "http", "https", "smb", "sftp", "ftp", "rtsp", "rtmp", "udp", "rtp" -> true;
+			default -> false;
+		};
+	}
+
 	private void prepared(PendingSource source) {
 		if (source != this.source) {
 			source.close();
@@ -165,6 +177,7 @@ public class VlcEngine extends MediaEngineBase
 	@Override
 	public void start() {
 		player.play();
+		player.setVolume(muted ? 0 : playbackVolume);
 	}
 
 	@Override
@@ -397,7 +410,7 @@ public class VlcEngine extends MediaEngineBase
 		if (i == null) {
 			player.setSpuTrack(-1);
 			super.setCurrentSubtitleStream(null);
-		} else if (i.getFiles().isEmpty()) {
+		} else if (i.getFiles().isEmpty() && !(i instanceof SubtitleStreamInfo.External)) {
 			player.setSpuTrack((int) i.getId());
 			super.setCurrentSubtitleStream(null);
 		} else {
@@ -639,14 +652,30 @@ public class VlcEngine extends MediaEngineBase
 		}
 	}
 
+	private int playbackVolume = 100;
+	private boolean muted;
+
+	@Override
+	public boolean supportsPlaybackVolume() {
+		return true;
+	}
+
+	@Override
+	public boolean setPlaybackVolume(int percent) {
+		playbackVolume = Math.max(0, Math.min(200, percent));
+		return muted || player.setVolume(playbackVolume) == 0;
+	}
+
 	@Override
 	public void mute(Context ctx) {
+		muted = true;
 		player.setVolume(0);
 	}
 
 	@Override
 	public void unmute(Context ctx) {
-		player.setVolume(100);
+		muted = false;
+		player.setVolume(playbackVolume);
 	}
 
 	private static class Source implements Closeable {

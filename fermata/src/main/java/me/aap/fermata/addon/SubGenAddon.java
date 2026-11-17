@@ -20,7 +20,6 @@ import java.util.Locale;
 import me.aap.fermata.FermataApplication;
 import me.aap.fermata.R;
 import me.aap.fermata.media.sub.Subtitles;
-import me.aap.fermata.ui.activity.MainActivity;
 import me.aap.fermata.ui.activity.MainActivityDelegate;
 import me.aap.utils.app.App;
 import me.aap.utils.async.FutureSupplier;
@@ -35,14 +34,13 @@ import me.aap.utils.pref.PreferenceSet;
 import me.aap.utils.pref.PreferenceStore;
 import me.aap.utils.pref.PreferenceStore.Pref;
 import me.aap.utils.ui.UiUtils;
-import me.aap.utils.ui.activity.ActivityBase;
 
 @Keep
 public class SubGenAddon implements FermataAddon {
 	public static final Pref<BooleanSupplier> ENABLED = Pref.b("SG_ENABLED", false);
 	public static final Pref<Supplier<String>> IMPL = Pref.s("SG_IMPL", "whisper");
 	public static final Pref<Supplier<String>> LANG = Pref.s("SG_LANG", "auto");
-	public static final Pref<IntSupplier> BUF_LEN = Pref.i("SG_BUF_LEN", 20);
+	public static final Pref<IntSupplier> BUF_LEN = Pref.i("SG_BUF_LEN", 5);
 	public static final Pref<IntSupplier> CHUNK_LEN = Pref.i("SG_CHUNK_LEN", 5);
 	public static final PreferenceStore.Pref<BooleanSupplier> TRANSLATE =
 			PreferenceStore.Pref.b("SG_TRANSLATE", false);
@@ -112,8 +110,8 @@ public class SubGenAddon implements FermataAddon {
 			o.pref = BUF_LEN;
 			o.title = R.string.sub_gen_buf;
 			o.subtitle = R.string.sub_gen_buf_sub;
-			o.seekMin = 10;
-			o.seekMax = 60;
+			o.seekMin = 5;
+			o.seekMax = 30;
 			o.seekScale = 5;
 			o.visibility = visibility.copy();
 		});
@@ -156,6 +154,18 @@ public class SubGenAddon implements FermataAddon {
 				.applyBooleanPref(getImplInfo().enabledPref, false);
 	}
 
+	public static void manageModels(Context ctx, PreferenceStore prefs, Runnable onSelected) {
+		var app = FermataApplication.get();
+		var module = app.getPreferenceStore().getStringPref(IMPL);
+		app.getAddonManager().getOrInstallAddon(module).main().onSuccess(addon -> {
+			if (addon instanceof SubGenAddon impl) impl.showModels(ctx, prefs, onSelected);
+		}).onFailure(err -> UiUtils.showAlert(ctx, R.string.sub_gen_error, err.getLocalizedMessage()));
+	}
+
+	protected void showModels(Context ctx, PreferenceStore prefs, Runnable onSelected) {
+		UiUtils.showAlert(ctx, R.string.sub_gen_error, "Model manager is unavailable");
+	}
+
 	public Collection<String> cleanUp(Context ctx, PreferenceStore ps) {
 		var impl = getImpl().peek();
 		return impl != null ? impl.doCleanUp(ctx, ps) : emptyList();
@@ -184,19 +194,12 @@ public class SubGenAddon implements FermataAddon {
 		var t = getImpl.then(
 				i -> i.getTranscriptor(ps)
 						.map(r -> (Transcriptor) new CachedTranscriptor(i.createCacheKey(ps), r)));
-		if (t.isDoneNotFailed()) return t;
-		var ctx = App.get();
-		ActivityBase.create(App.get(), "me.aap.fermata.subgen", "subgen",
-				me.aap.fermata.R.drawable.notification, ctx.getString(R.string.downloading, "..."),
-				null, MainActivity.class).onSuccess(a -> {
-			if (t.isDoneNotFailed()) return;
-			if (t.isFailed()) {
-				var err = t.getFailure();
-				UiUtils.showAlert(a, ctx.getString(R.string.sub_gen_download_fail,
-						err == null ? "" : err.getLocalizedMessage()));
-			} else {
-				UiUtils.showInfo(a, ctx.getString(R.string.sub_gen_downloading));
-			}
+		t.main().onFailure(err -> {
+			if (me.aap.utils.function.ResultConsumer.Cancel.isCancellation(err)) return;
+			Log.e(err, "Automatic subtitle initialization failed");
+			var ctx = App.get();
+			android.widget.Toast.makeText(ctx, ctx.getString(R.string.sub_gen_error,
+					err.getLocalizedMessage()), android.widget.Toast.LENGTH_LONG).show();
 		});
 		return t;
 	}

@@ -276,7 +276,6 @@ public class SettingsFragment extends MainActivityFragment
 	public static void addAutoSubPrefs(Context ctx, PreferenceSet set, PreferenceStore ps,
 																		 ChangeableCondition cond, boolean isGlobalSettings) {
 		var subGen = FermataApplication.get().getAddonManager().getAddon(SubGenAddon.class);
-		if (subGen == null) return;
 
 		var subGenSet = set.subSet(o -> {
 			o.title = R.string.subtitles_auto;
@@ -288,8 +287,14 @@ public class SettingsFragment extends MainActivityFragment
 			o.title = R.string.enable;
 			o.pref = SubGenAddon.ENABLED;
 		});
-		subGen.contributeSettings(ctx, ps, subGenSet, PrefCondition.create(ps, SubGenAddon.ENABLED),
-				false);
+		if (!MainActivityDelegate.get(ctx).getAppActivity().isCarActivity()) {
+			subGenSet.addButton(o -> {
+				o.title = R.string.sub_gen_manage_models;
+				o.onClick = () -> SubGenAddon.manageModels(ctx, ps, null);
+			});
+		}
+		(subGen == null ? new SubGenAddon() : subGen).contributeSettings(ctx, ps, subGenSet,
+				PrefCondition.create(ps, SubGenAddon.ENABLED), false);
 	}
 
 	private PreferenceViewAdapter createAdapter(MainActivityDelegate a) {

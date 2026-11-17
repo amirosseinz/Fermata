@@ -1,6 +1,5 @@
 package me.aap.fermata.engine.exoplayer;
 
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static me.aap.utils.async.Completed.completed;
 import static me.aap.utils.async.Completed.completedNull;
 
@@ -9,20 +8,22 @@ import androidx.media3.common.audio.AudioProcessor;
 import androidx.media3.common.util.UnstableApi;
 
 import java.nio.ByteBuffer;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import me.aap.fermata.FermataApplication;
 import me.aap.fermata.addon.SubGenAddon;
 import me.aap.utils.async.FutureSupplier;
-import me.aap.utils.log.Log;
 
 @UnstableApi
 class PendingLoadAudioProcessor implements AudioProcessor {
 	private final ExoPlayerEngine.Accessor player;
 	private final AtomicInteger state = new AtomicInteger();
 	private AudioFormat pendingConfiguration;
-	private FutureSupplier<AudioTranscriptProcessor> delegate = completedNull();
+	private StreamMetadata streamMetadata = StreamMetadata.DEFAULT;
+	private boolean enabled;
+	private ByteBuffer fallbackOutput = EMPTY_BUFFER;
+	private boolean fallbackEnded;
+	private volatile FutureSupplier<AudioTranscriptProcessor> delegate = completedNull();
 
 	PendingLoadAudioProcessor(ExoPlayerEngine.Accessor player) {
 		this.player = player;
@@ -39,6 +40,7 @@ class PendingLoadAudioProcessor implements AudioProcessor {
 	public AudioFormat configure(@NonNull AudioFormat inputAudioFormat)
 			throws UnhandledAudioFormatException {
 		pendingConfiguration = null;
+		enabled = false;
 		var source = player.getSource();
 		if (source == null) {
 			releaseDelegate();
@@ -46,7 +48,8 @@ class PendingLoadAudioProcessor implements AudioProcessor {
 		}
 
 		var ps = source.getPrefs();
-		if (ps.getBooleanPref(SubGenAddon.ENABLED)) {
+		enabled = ps.getBooleanPref(SubGenAddon.ENABLED);
+		if (enabled) {
 			var atp = delegate.peek();
 			if (atp != null) {
 				if (!atp.reconfigure(ps)) {
@@ -71,51 +74,61 @@ class PendingLoadAudioProcessor implements AudioProcessor {
 
 	@Override
 	public boolean isActive() {
-		var d = get();
-		return (d != null) && d.isActive() || !delegate.isDone();
+		return enabled;
 	}
 
 	@Override
 	public void queueInput(@NonNull ByteBuffer inputBuffer) {
 		var d = get();
-		if ((d == null) && !delegate.isDone()) {
-			try {
-				d = delegate.get(500, MILLISECONDS);
-			} catch (TimeoutException ignore) {
-			} catch (Exception err) {
-				Log.e(err);
-			}
+
+		if (d != null) {
+			d.queueInput(inputBuffer);
+		} else if (delegate.isDone() && !fallbackOutput.hasRemaining()) {
+			fallbackOutput = ByteBuffer.allocateDirect(inputBuffer.remaining())
+					.order(java.nio.ByteOrder.nativeOrder());
+			fallbackOutput.put(inputBuffer).flip();
 		}
-		if (d != null) d.queueInput(inputBuffer);
 	}
 
 	@Override
 	public void queueEndOfStream() {
 		var d = get();
 		if (d != null) d.queueEndOfStream();
+		else fallbackEnded = true;
 	}
 
 	@NonNull
 	@Override
 	public ByteBuffer getOutput() {
 		var d = get();
-		return (d != null) ? d.getOutput() : EMPTY_BUFFER;
+		if (d != null) return d.getOutput();
+		var output = fallbackOutput;
+		fallbackOutput = EMPTY_BUFFER;
+		return output;
 	}
 
 	@Override
 	public boolean isEnded() {
 		var d = get();
-		return (d != null) && d.isEnded();
+		return d != null ? d.isEnded() : fallbackEnded && !fallbackOutput.hasRemaining();
 	}
 
 	@Override
-	public void flush() {
+	public void flush(StreamMetadata metadata) {
+		streamMetadata = metadata;
+		fallbackOutput = EMPTY_BUFFER;
+		fallbackEnded = false;
 		var d = get();
-		if (d != null) d.flush();
+		if (d != null) d.flush(metadata);
 	}
 
 	@Override
 	public void reset() {
+		enabled = false;
+		streamMetadata = StreamMetadata.DEFAULT;
+		pendingConfiguration = null;
+		fallbackOutput = EMPTY_BUFFER;
+		fallbackEnded = false;
 		state.incrementAndGet();
 		var d = delegate.peek();
 		delegate = completedNull();
@@ -127,7 +140,9 @@ class PendingLoadAudioProcessor implements AudioProcessor {
 
 	private void createDelegate() {
 		var st = state.incrementAndGet();
-		delegate = FermataApplication.get().getAddonManager().getOrInstallAddon(SubGenAddon.class)
+		var app = FermataApplication.get();
+		delegate = me.aap.utils.async.Completed.completedVoid().main()
+				.then(unused -> app.getAddonManager().getOrInstallAddon(SubGenAddon.class))
 				.then(a -> {
 					if (a == null || state.get() != st) return completedNull();
 					var pi = player.getSource();
@@ -144,11 +159,10 @@ class PendingLoadAudioProcessor implements AudioProcessor {
 					}
 					if (!t.reconfigure(pi.getPrefs())) {
 						t.release();
-						createDelegate();
 						return completedNull();
 					}
 					var ps = pi.getPrefs();
-					return delegate = completed(new AudioTranscriptProcessor(player, t,
+					return completed(new AudioTranscriptProcessor(player, t,
 							ps.getIntPref(SubGenAddon.BUF_LEN), ps.getIntPref(SubGenAddon.CHUNK_LEN)));
 				});
 	}
@@ -156,10 +170,8 @@ class PendingLoadAudioProcessor implements AudioProcessor {
 	private void releaseDelegate() {
 		state.incrementAndGet();
 		var atp = delegate.peek();
-		if (atp != null) {
-			atp.release();
-			delegate = completedNull();
-		}
+		delegate = completedNull();
+		if (atp != null) atp.release();
 	}
 
 	private AudioTranscriptProcessor get() {
@@ -168,6 +180,8 @@ class PendingLoadAudioProcessor implements AudioProcessor {
 		if (pendingConfiguration != null) {
 			try {
 				atp.configure(pendingConfiguration);
+				atp.flush(streamMetadata);
+				if (fallbackEnded) atp.queueEndOfStream();
 			} catch (UnhandledAudioFormatException err) {
 				throw new RuntimeException(err);
 			}

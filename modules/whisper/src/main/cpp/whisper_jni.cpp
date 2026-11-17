@@ -1,11 +1,15 @@
+#include <algorithm>
 #include <cassert>
+#include <chrono>
+#include <cstring>
 #include <jni.h>
-#include <map>
+#include <memory>
 #include <string>
-#include <thread>
+
 
 #include "android/log.h"
 #include "ggml.h"
+#include "ggml-backend.h"
 #include "whisper.h"
 
 #define  LOG_TAG "[me.aap.fermata.Whisper]"
@@ -22,17 +26,53 @@
 static constexpr unsigned OVERLAP_SAMPLES = WHISPER_SAMPLE_RATE * 200 / 1000;
 static constexpr unsigned SAMPLES_CAPACITY = WHISPER_SAMPLE_RATE * 180;
 
+static int suitableGpu() {
+#ifdef FERMATA_WHISPER_HAS_VULKAN
+	try {
+		int gpuIndex = 0;
+		for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+			auto device = ggml_backend_dev_get(i);
+			auto type = ggml_backend_dev_type(device);
+			if (type != GGML_BACKEND_DEVICE_TYPE_GPU && type != GGML_BACKEND_DEVICE_TYPE_IGPU)
+				continue;
+			auto backend = ggml_backend_dev_backend_reg(device);
+			if (backend && std::strcmp(ggml_backend_reg_name(backend), "Vulkan") == 0)
+				return gpuIndex;
+			++gpuIndex;
+		}
+	} catch (const std::exception &err) {
+		LOGI("GPU discovery failed: %s", err.what());
+	}
+#endif
+	return -1;
+}
+
+static whisper_context *openModel(const char *path, int gpuIndex) {
+	auto params = whisper_context_default_params();
+	params.use_gpu = gpuIndex >= 0;
+	params.gpu_device = std::max(0, gpuIndex);
+	params.flash_attn = false;
+	try {
+		return whisper_init_from_file_with_params(path, params);
+	} catch (const std::exception &err) {
+		LOGI("Whisper initialization failed: %s", err.what());
+		return nullptr;
+	}
+}
+
 struct WhisperSession {
-	explicit WhisperSession(struct whisper_context *ctx, std::string &vadPath, std::string &lang)
-			: ctx(ctx), vadPath(vadPath), lang(lang),
+	WhisperSession(whisper_context *ctx, std::string modelPath, std::string vadPath,
+			std::string lang, bool gpuRequested, int probeGpu, int threads)
+			: ctx(ctx), modelPath(std::move(modelPath)), vadPath(std::move(vadPath)),
+				lang(std::move(lang)), gpuRequested(gpuRequested), probeGpu(probeGpu),
 				params(whisper_full_default_params(WHISPER_SAMPLING_GREEDY)) {
 		reset();
-		params.n_threads = static_cast<int>(std::thread::hardware_concurrency());
+		params.n_threads = std::clamp(threads, 1, 4);
 		params.print_special = false;
 		params.print_progress = false;
 		params.print_realtime = false;
 		params.print_timestamps = false;
-		params.max_len = 1;
+		params.max_len = 80;
 		params.split_on_word = true;
 
 		if (!this->vadPath.empty()) {
@@ -48,27 +88,39 @@ struct WhisperSession {
 		timestampOffset = 0;
 		curSkip = 0;
 		overlapSize = 0;
-		whisper_reset_timings(ctx);
-		params.language = lang.empty() ? nullptr : lang.c_str();
-		params.detect_language = lang.empty() || lang == "auto";
+		reportOverlapMs = 0;
+		resamplePhase = 0;
+		averageSum = 0;
+		averageCount = 0;
+		if (ctx) whisper_reset_timings(ctx);
+		params.language = ctx && !whisper_is_multilingual(ctx) ? "en" :
+				(lang.empty() ? "auto" : lang.c_str());
+		params.detect_language = false;
 	}
 
-	struct whisper_context *ctx;
+	whisper_context *ctx;
+	std::string modelPath;
 	std::string vadPath;
 	std::string lang;
+	bool gpuRequested;
+	int probeGpu;
 	whisper_full_params params;
 	size_t consumed{0};
 	size_t timestampOffset{0};
 	unsigned size{0};
 	int curSkip{0};
 	unsigned overlapSize{0};
+	int64_t reportOverlapMs{0};
+	unsigned resamplePhase{0};
+	float averageSum{0};
+	unsigned averageCount{0};
 	float samples[SAMPLES_CAPACITY]{};
 };
 
 template<unsigned S>
 using SampleType = std::conditional_t<
 		S == 1,
-		int8_t,
+		uint8_t,
 		std::conditional_t<S == 3, uint8_t, std::conditional_t<S == 2, int16_t, int32_t>>
 >;
 
@@ -86,7 +138,9 @@ struct SampleBuffer {
 	// Convert a single sample at idx to a whisper sample - float in range [-1.0, 1.0)
 	float operator[](size_t idx) {
 		constexpr auto div = static_cast<float>(1ULL << (8 * S - 1));
-		if constexpr (S == 3) {
+		if constexpr (S == 1) {
+			return (static_cast<int>(data[idx]) - 128) / 128.0f;
+		} else if constexpr (S == 3) {
 			const uint8_t *p = data + idx * 3;
 			int32_t v = p[0] | (p[1] << 8) | (p[2] << 16);
 			// Extend the sign bit from 24th to 32nd bit
@@ -97,145 +151,70 @@ struct SampleBuffer {
 		}
 	}
 
-	static size_t
-	copy(JNIEnv *env, jobject src, WhisperSession *dst, unsigned channels, size_t frameRate) {
-		SampleBuffer<S> buf(env, src);
-		size_t n = buf.size * WHISPER_SAMPLE_RATE / channels / frameRate;
-		size_t available = SAMPLES_CAPACITY - dst->size;
-		if (n > available) {
-			LOGI("Sample buffer overflow: dropping %zu frames", n - available);
-			n = available;
-		}
-		auto samples = dst->samples + dst->size;
-		size_t consumed;
-		if ((channels * frameRate) % WHISPER_SAMPLE_RATE) {
-			float ratio =
-					static_cast<float>(channels * frameRate) / static_cast<float>(WHISPER_SAMPLE_RATE);
-			size_t frameWidth = std::max(static_cast<size_t>(1),
-																	 static_cast<size_t>(channels * frameRate / WHISPER_SAMPLE_RATE));
-			for (size_t i = 0; i < n; ++i) {
-				auto frameIdx = static_cast<size_t>(static_cast<float>(i) * ratio);
-				float sum = 0.0f;
-				for (size_t j = 0; j < frameWidth; ++j) sum += buf[frameIdx + j];
-				samples[i] = sum / static_cast<float>(frameWidth);
-			}
-			consumed = static_cast<size_t>(static_cast<float>(n) * ratio) * S;
-		} else {
-			size_t ratio = (channels * frameRate) / WHISPER_SAMPLE_RATE;
-			size_t frameWidth = std::max(static_cast<size_t>(1), ratio);
-			for (size_t i = 0; i < n; ++i) {
-				auto frameIdx = i * ratio;
-				float sum = 0.0f;
-				for (size_t j = 0; j < frameWidth; ++j) sum += buf[frameIdx + j];
-				samples[i] = sum / static_cast<float>(frameWidth);
-			}
-			consumed = n * ratio * S;
-		}
-		dst->size += n;
-		return consumed;
-	}
 };
 
-template<unsigned C, size_t R>
-using SampleRatioType = std::conditional_t<((C * R) % WHISPER_SAMPLE_RATE) == 0, size_t, float>;
+template<unsigned S>
+static size_t resampleFrames(JNIEnv *env, jobject source, WhisperSession *session,
+		unsigned channels, unsigned rate, unsigned target) {
+	SampleBuffer<S> input(env, source);
+	auto frames = input.size / channels;
+	size_t i = 0;
+	while (i < frames && session->size < target) {
+		float mono = 0;
+		for (unsigned channel = 0; channel < channels; ++channel)
+			mono += input[i * channels + channel];
+		mono /= static_cast<float>(channels);
+		++i;
 
-template<unsigned S, unsigned C, size_t R, typename Srt = SampleRatioType<C, R>,
-		Srt Ratio = static_cast<Srt>(C * R) / static_cast<Srt>(WHISPER_SAMPLE_RATE)>
-struct FrameBuffer {
-	FrameBuffer(JNIEnv *env, jobject byteBuf)
-			: buf(env, byteBuf) {
-		static_assert(C >= 1, "The number of channels must be >= 1");
-		static_assert(R > 0, "Frame rate must be > 0");
+		session->averageSum += mono;
+		++session->averageCount;
+		session->resamplePhase += WHISPER_SAMPLE_RATE;
+		if (session->resamplePhase < rate) continue;
+
+		float sample = session->averageSum / static_cast<float>(session->averageCount);
+		do {
+			session->samples[session->size++] = sample;
+			session->resamplePhase -= rate;
+		} while (session->resamplePhase >= rate && session->size < SAMPLES_CAPACITY);
+		session->averageSum = 0;
+		session->averageCount = 0;
 	}
-
-	SampleBuffer<S> buf;
-
-	size_t size() {
-		return static_cast<size_t>(static_cast<Srt>(buf.size) / Ratio);
-	}
-
-	// Convert a single frame at idx to a whisper sample, scaling the frame rate R proportionally
-	float operator[](size_t idx) {
-		if constexpr (std::is_same_v<Srt, size_t>) {
-			if constexpr (Ratio == 1) { // 16kHz mono
-				return buf[idx];
-			} else if constexpr (Ratio == 2) { // 16kHz stereo
-				idx *= 2;
-				return 0.5f * (buf[idx] + buf[idx + 1]);
-			} else if constexpr (Ratio == 3) { // 48kHz mono
-				return buf[idx * 3 + 1]; // Take the middle sample
-			} else if constexpr (Ratio == 6) { // 48kHz stereo
-				idx *= 6;
-				return 0.5f * (buf[idx + 2] + buf[idx + 3]); // Take mid of L and R
-			}
-		} else if constexpr (R == 44100) {
-			idx = static_cast<size_t>(static_cast<Srt>(idx) * Ratio);
-			if constexpr (C == 1) { // 44.1kHz mono
-				return buf[idx + 1];
-			} else { // 44.1kHz stereo
-				return 0.5f * (buf[idx + 2] + buf[idx + 3]);
-			}
-		}
-
-		constexpr auto frameWidth = static_cast<size_t>(Ratio) == 0 ? 1 : static_cast<size_t>(Ratio);
-		idx = static_cast<size_t>(static_cast<Srt>(idx) * Ratio);
-		float sum = 0.0f;
-		for (size_t i = 0; i < frameWidth; ++i) {
-			sum += buf[idx + i];
-		}
-		return sum / static_cast<float>(frameWidth);
-	}
-
-	static size_t copy(JNIEnv *env, jobject src, WhisperSession *dst) {
-		FrameBuffer<S, C, R> buf(env, src);
-		size_t available = SAMPLES_CAPACITY - dst->size;
-		auto n = buf.size();
-		if (n > available) {
-			LOGI("Sample buffer overflow: dropping %zu frames", n - available);
-			n = available;
-		}
-		auto samples = dst->samples + dst->size;
-		for (size_t i = 0; i < n; ++i) {
-			samples[i] = buf[i];
-		}
-		dst->size += n;
-		auto nBytes = static_cast<size_t>(static_cast<Srt>(n) * Ratio * S);
-		LOGD("Resampled %zu frames, consumed %zu: %u bytes per sample, %u channels, %zu Hz",
-				 n, nBytes, S, C, R);
-		return nBytes;
-	}
-};
+	return i * channels * S;
+}
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_me_aap_fermata_whisper_Whisper_create(JNIEnv *env, jclass, jstring jModelPath,
 																					 jstring jvadPath, jstring jlang,
-																					 jboolean useGpu) {
-	const char *modelPath = env->GetStringUTFChars(jModelPath, nullptr);
-	whisper_context_params params = whisper_context_default_params();
-	params.use_gpu = useGpu;
-	params.flash_attn = false;
-	struct whisper_context *ctx = whisper_init_from_file_with_params(modelPath, params);
-	env->ReleaseStringUTFChars(jModelPath, modelPath);
-	if (!ctx) {
-		env->ThrowNew(env->FindClass("java/lang/RuntimeException"), "Failed to load whisper model");
-		return 0;
-	}
-
+																					 jboolean useGpu, jint threads) {
 	try {
+		std::string modelPath;
 		std::string lang;
 		std::string vadPath;
-		for (auto &[s, js]: {std::make_pair(&lang, jlang), std::make_pair(&vadPath, jvadPath)}) {
-			if (js) {
-				auto chars = env->GetStringUTFChars(js, nullptr);
-				*s = chars;
-				env->ReleaseStringUTFChars(js, chars);
-			}
+		for (auto &[value, input] : {std::make_pair(&modelPath, jModelPath),
+				std::make_pair(&lang, jlang), std::make_pair(&vadPath, jvadPath)}) {
+			if (!input) continue;
+			auto release = [&](const char *chars) { env->ReleaseStringUTFChars(input, chars); };
+			std::unique_ptr<const char, decltype(release)> chars(env->GetStringUTFChars(input, nullptr), release);
+			if (!chars) return 0;
+			*value = chars.get();
 		}
-		return reinterpret_cast<jlong>(new WhisperSession(ctx, vadPath, lang));
+		int gpu = useGpu ? suitableGpu() : -1;
+		std::unique_ptr<whisper_context, decltype(&whisper_free)> ctx(
+				openModel(modelPath.c_str(), -1), whisper_free);
+		bool usingGpu = !ctx && gpu >= 0;
+		if (usingGpu) ctx.reset(openModel(modelPath.c_str(), gpu));
+		if (!ctx) {
+			env->ThrowNew(env->FindClass("java/lang/RuntimeException"), "Failed to load Whisper model");
+			return 0;
+		}
+		auto session = new WhisperSession(ctx.get(), std::move(modelPath), std::move(vadPath),
+				std::move(lang), usingGpu, usingGpu ? -1 : gpu, threads);
+		ctx.release();
+		LOGI("Whisper: %s, %d CPU threads", usingGpu ? "Vulkan" : (gpu >= 0 ? "CPU, Vulkan eligible" : "CPU"),
+				session->params.n_threads);
+		return reinterpret_cast<jlong>(session);
 	} catch (const std::bad_alloc &) {
-		whisper_free(ctx);
-		env->ThrowNew(env->FindClass("java/lang/OutOfMemoryError"),
-									"Failed to allocate WhisperSession");
+		env->ThrowNew(env->FindClass("java/lang/OutOfMemoryError"), "Failed to allocate Whisper session");
 		return 0;
 	}
 }
@@ -256,173 +235,123 @@ Java_me_aap_fermata_whisper_Whisper_resample(JNIEnv *env, jclass, jlong sessionP
 																						 jint chunkLen, jint bytesPerSample, jint channels,
 																						 jint frameRate) {
 	assert(sessionPtr);
-	static auto resamplers = std::map<std::tuple<jint, jint, jint>, size_t (*)(JNIEnv *, jobject,
-																																						 WhisperSession *)>{
-			{{1, 1, 16000}, &FrameBuffer<1, 1, 16000>::copy},
-			{{1, 1, 44100}, &FrameBuffer<1, 1, 44100>::copy},
-			{{1, 1, 48000}, &FrameBuffer<1, 1, 48000>::copy},
-			{{2, 1, 16000}, &FrameBuffer<2, 1, 16000>::copy},
-			{{2, 1, 44100}, &FrameBuffer<2, 1, 44100>::copy},
-			{{2, 1, 48000}, &FrameBuffer<2, 1, 48000>::copy},
-			{{2, 2, 16000}, &FrameBuffer<2, 2, 16000>::copy},
-			{{2, 2, 44100}, &FrameBuffer<2, 2, 44100>::copy},
-			{{2, 2, 48000}, &FrameBuffer<2, 2, 48000>::copy},
-			{{3, 1, 16000}, &FrameBuffer<3, 1, 16000>::copy},
-			{{3, 1, 44100}, &FrameBuffer<3, 1, 44100>::copy},
-			{{3, 1, 48000}, &FrameBuffer<3, 1, 48000>::copy},
-			{{3, 2, 16000}, &FrameBuffer<3, 2, 16000>::copy},
-			{{3, 2, 44100}, &FrameBuffer<3, 2, 44100>::copy},
-			{{3, 2, 48000}, &FrameBuffer<3, 2, 48000>::copy},
-			{{4, 1, 16000}, &FrameBuffer<4, 1, 16000>::copy},
-			{{4, 1, 44100}, &FrameBuffer<4, 1, 44100>::copy},
-			{{4, 1, 48000}, &FrameBuffer<4, 1, 48000>::copy},
-			{{4, 2, 16000}, &FrameBuffer<4, 2, 16000>::copy},
-			{{4, 2, 44100}, &FrameBuffer<4, 2, 44100>::copy},
-			{{4, 2, 48000}, &FrameBuffer<4, 2, 48000>::copy},
-	};
-
-	auto session = reinterpret_cast<WhisperSession *>(sessionPtr);
-	size_t consumed;
-
-	if (auto it = resamplers.find({bytesPerSample, channels, frameRate}); it != resamplers.end()) {
-		consumed = it->second(env, byteBuf, session);
-	} else {
-		size_t (*resampler)(JNIEnv *, jobject, WhisperSession *, uint, size_t);
-		switch (bytesPerSample) {
-			case 1:
-				resampler = &SampleBuffer<1>::copy;
-				break;
-			case 2:
-				resampler = &SampleBuffer<2>::copy;
-				break;
-			case 3:
-				resampler = &SampleBuffer<3>::copy;
-				break;
-			case 4:
-				resampler = &SampleBuffer<4>::copy;
-				break;
-			default:
-				env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"),
-											"Unsupported bytesPerSample");
-				return 0;
-		}
-		consumed = resampler(env, byteBuf, session, static_cast<uint>(channels),
-												 static_cast<size_t>(frameRate));
+	if (channels <= 0 || frameRate < 1000 || chunkLen <= 0 ||
+			env->GetDirectBufferCapacity(byteBuf) < 0) {
+		env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"), "Invalid PCM audio format");
+		return 0;
 	}
 
+	auto session = reinterpret_cast<WhisperSession *>(sessionPtr);
+	auto target = static_cast<unsigned>(std::min(chunkLen, 60)) * WHISPER_SAMPLE_RATE;
+	size_t consumed;
+	switch (bytesPerSample) {
+		case 1: consumed = resampleFrames<1>(env, byteBuf, session, channels, frameRate, target); break;
+		case 2: consumed = resampleFrames<2>(env, byteBuf, session, channels, frameRate, target); break;
+		case 3: consumed = resampleFrames<3>(env, byteBuf, session, channels, frameRate, target); break;
+		case 4: consumed = resampleFrames<4>(env, byteBuf, session, channels, frameRate, target); break;
+		default:
+			env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"), "Unsupported PCM sample size");
+			return 0;
+	}
 	auto result = static_cast<jint>(consumed);
-	// Negative value means there are enough samples for transcription
-	return (session->size >= static_cast<unsigned>(chunkLen * WHISPER_SAMPLE_RATE)) ? -result
-																																									: result;
+	return session->size >= target ? -result : result;
+}
+
+static int runTranscription(WhisperSession *session) {
+	if (!session->ctx) return -1;
+	try {
+		return whisper_full(session->ctx, session->params, session->samples,
+				static_cast<int>(session->size));
+	} catch (const std::exception &err) {
+		LOGI("Whisper transcription failed: %s", err.what());
+		return -1;
+	}
+}
+
+static int selectBackend(WhisperSession *session) {
+	using Clock = std::chrono::steady_clock;
+	auto start = Clock::now();
+	int result = runTranscription(session);
+	auto cpuTime = Clock::now() - start;
+	if (result == 0 && session->probeGpu >= 0 && whisper_full_n_segments(session->ctx) > 0) {
+		int gpu = session->probeGpu;
+		session->probeGpu = -1;
+		// Keep one copy of the model in memory. Both backends see the same audio.
+		whisper_free(session->ctx);
+		session->ctx = openModel(session->modelPath.c_str(), gpu);
+		start = Clock::now();
+		int gpuResult = runTranscription(session);
+		auto gpuTime = Clock::now() - start;
+		if (gpuResult == 0 && whisper_full_n_segments(session->ctx) > 0 && gpuTime < cpuTime) {
+			session->gpuRequested = true;
+			LOGI("Whisper benchmark selected Vulkan");
+			return 0;
+		}
+		if (session->ctx) whisper_free(session->ctx);
+		session->ctx = openModel(session->modelPath.c_str(), -1);
+		LOGI("Whisper benchmark selected CPU");
+		return runTranscription(session);
+	}
+	return result;
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_me_aap_fermata_whisper_Whisper_fullTranscribe(JNIEnv *env, jclass, jlong sessionPtr) {
 	assert(sessionPtr);
 	auto session = reinterpret_cast<WhisperSession *>(sessionPtr);
-	if (session->size == 0) return 0;
+	if (session->size <= session->overlapSize) return 0;
 
 	whisper_full_params &params = session->params;
-	int segments = 0;
-	bool retry = false;
-	do {
-		retry = false;
-		if (whisper_full(session->ctx, params, session->samples, static_cast<int>(session->size)) !=
-				0) {
-			env->ThrowNew(env->FindClass("java/lang/RuntimeException"), "Failed to transcribe");
-			return 0;
+	int result = selectBackend(session);
+	if (result != 0 && session->gpuRequested) {
+		LOGI("Vulkan inference failed, retrying the current audio with CPU");
+		session->gpuRequested = false;
+		whisper_free(session->ctx);
+		session->ctx = openModel(session->modelPath.c_str(), -1);
+		result = runTranscription(session);
+	}
+	if (result != 0) {
+		env->ThrowNew(env->FindClass("java/lang/RuntimeException"), "Failed to transcribe");
+		return 0;
+	}
+	// Keep a short overlap for the next chunk, and use the absolute PCM offset for timestamps.
+	auto segments = whisper_full_n_segments(session->ctx);
+	auto overlapCs = static_cast<int64_t>(session->overlapSize) * 100 / WHISPER_SAMPLE_RATE;
+	session->curSkip = 0;
+	session->reportOverlapMs = overlapCs * 10;
+	while (session->curSkip < segments &&
+			whisper_full_get_segment_t1(session->ctx, session->curSkip) <= overlapCs)
+		++session->curSkip;
+	// Auto detection inside whisper_full shares its feature extraction with decoding.
+	// Ignore empty output so opening silence does not pin the session language.
+	if (std::strcmp(params.language, "auto") == 0 && segments > session->curSkip) {
+		for (int i = session->curSkip; i < segments; ++i) {
+			auto text = whisper_full_get_segment_text(session->ctx, i);
+			if (text == nullptr || text[std::strspn(text, " \t\r\n")] == '\0') continue;
+			auto detected = whisper_lang_str(whisper_full_lang_id(session->ctx));
+			if (detected) params.language = detected;
+			break;
 		}
-
-		segments = whisper_full_n_segments(session->ctx);
-		unsigned consumed = session->size;
-
-		if (segments) { // Trim to a sentence boundary
-			auto totalSegments = segments;
-			auto dur = whisper_full_get_segment_t1(session->ctx, segments - 1) -
-								 whisper_full_get_segment_t0(session->ctx, 0);
-			for (decltype(dur) trimDur = 0; segments > 0; --segments) {
-				auto seg = segments - 1;
-				trimDur += whisper_full_get_segment_t1(session->ctx, seg) -
-									 whisper_full_get_segment_t0(session->ctx, seg);
-				if (trimDur >= 1000) break; // Do not trim more than 10 seconds
-
-				const char *text = whisper_full_get_segment_text(session->ctx, seg);
-				size_t textLen = text ? std::strlen(text) : 0;
-				for (; textLen > 0 && std::isspace((unsigned char) text[textLen - 1]); --textLen);
-				if (!textLen) continue;
-				char c = text[textLen - 1];
-				if (c == '.' || c == '?' || c == '!' ||
-						((dur - trimDur > 300) && (c == ',' || c == ';' || c == ':' || c == '-'))) {
-					break;
-				}
-			}
-
-			if (segments != totalSegments) {
-				unsigned end;
-				if (segments > 0) {
-					end = static_cast<unsigned>(whisper_full_get_segment_t1(session->ctx, segments - 1) *
-																			WHISPER_SAMPLE_RATE / 100);
-				} else {
-					end = static_cast<unsigned>(whisper_full_get_segment_t0(session->ctx, 0) *
-																			WHISPER_SAMPLE_RATE / 100);
-				}
-				consumed = std::min(session->size, end);
-			}
-		}
-
-		if (params.detect_language) {
-			params.language = whisper_lang_str(whisper_full_lang_id(session->ctx));
-			if (params.language) {
-				params.detect_language = false;
-				session->lang = params.language;
-				LOGI("Detected language: %s", params.language);
-				if (segments == 0) {
-					LOGD("No segments detected. Retrying after language detection.");
-					retry = true;
-					continue;
-				}
-			}
-		}
-
-		// Skip segments that fall entirely within the overlap region (already reported)
-		auto overlapCs = static_cast<int64_t>(session->overlapSize) * 100 / WHISPER_SAMPLE_RATE;
-		int skip = 0;
-		for (; skip < segments; skip++) {
-			if (whisper_full_get_segment_t0(session->ctx, skip) >= overlapCs) break;
-		}
-		session->curSkip = skip;
-
-		// Keep overlap context at front of buffer for better boundary quality
-		unsigned shiftFrom = consumed;
-		unsigned newOverlap = 0;
-		if (consumed < session->size && consumed > OVERLAP_SAMPLES) {
-			shiftFrom = consumed - OVERLAP_SAMPLES;
-			newOverlap = OVERLAP_SAMPLES;
-		}
-
-		if (shiftFrom >= session->size) {
-			session->size = 0;
-		} else {
-			std::memmove(session->samples, session->samples + shiftFrom,
-									 (session->size - shiftFrom) * sizeof(float));
-			session->size -= shiftFrom;
-		}
-
-		session->timestampOffset = session->consumed * 1000 / WHISPER_SAMPLE_RATE;
-		session->consumed += shiftFrom;
-		session->overlapSize = newOverlap;
-	} while (retry);
-
-	int reported = segments - session->curSkip;
-	return reported > 0 ? reported : 0;
+	}
+	session->timestampOffset = session->consumed * 1000 / WHISPER_SAMPLE_RATE;
+	auto overlap = session->size > OVERLAP_SAMPLES ? OVERLAP_SAMPLES : 0u;
+	auto shift = session->size - overlap;
+	std::memmove(session->samples, session->samples + shift, overlap * sizeof(float));
+	session->size = overlap;
+	session->overlapSize = overlap;
+	session->consumed += shift;
+	return segments - session->curSkip;
 }
 
-extern "C" JNIEXPORT jstring JNICALL
+extern "C" JNIEXPORT jbyteArray JNICALL
 Java_me_aap_fermata_whisper_Whisper_text(JNIEnv *env, jclass, jlong sessionPtr, jint segmentIdx) {
 	assert(sessionPtr);
 	auto session = reinterpret_cast<WhisperSession *>(sessionPtr);
-	const char *segTxt = whisper_full_get_segment_text(session->ctx, segmentIdx + session->curSkip);
-	return env->NewStringUTF(segTxt ? segTxt : "");
+	const char *text = whisper_full_get_segment_text(session->ctx, segmentIdx + session->curSkip);
+	auto size = text ? static_cast<jsize>(std::strlen(text)) : 0;
+	auto bytes = env->NewByteArray(size);
+	if (bytes && size) env->SetByteArrayRegion(bytes, 0, size, reinterpret_cast<const jbyte *>(text));
+	return bytes;
 }
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -430,7 +359,8 @@ Java_me_aap_fermata_whisper_Whisper_start(JNIEnv *, jclass, jlong sessionPtr, ji
 	assert(sessionPtr);
 	auto session = reinterpret_cast<WhisperSession *>(sessionPtr);
 	auto t = session->timestampOffset +
-					 whisper_full_get_segment_t0(session->ctx, segmentIdx + session->curSkip) * 10;
+			std::max(session->reportOverlapMs,
+					whisper_full_get_segment_t0(session->ctx, segmentIdx + session->curSkip) * 10);
 	return static_cast<jlong>(t);
 }
 
@@ -449,7 +379,7 @@ Java_me_aap_fermata_whisper_Whisper_lang(JNIEnv *env, jclass, jlong sessionPtr) 
 	auto session = reinterpret_cast<WhisperSession *>(sessionPtr);
 	auto lang = session->params.language;
 	if (lang == nullptr || std::strcmp("auto", lang) == 0) {
-		lang = whisper_lang_str(whisper_full_lang_id(session->ctx));
+		lang = session->ctx ? whisper_lang_str(whisper_full_lang_id(session->ctx)) : nullptr;
 	}
 	return env->NewStringUTF(lang == nullptr ? "" : lang);
 }
@@ -465,6 +395,6 @@ extern "C" JNIEXPORT void JNICALL
 Java_me_aap_fermata_whisper_Whisper_release(JNIEnv *, jclass, jlong sessionPtr) {
 	if (!sessionPtr) return;
 	auto session = reinterpret_cast<WhisperSession *>(sessionPtr);
-	whisper_free(session->ctx);
+	if (session->ctx) whisper_free(session->ctx);
 	delete session;
 }

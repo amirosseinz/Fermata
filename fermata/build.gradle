@@ -1,8 +1,15 @@
 if (gradle.ext.enableGoogleServices) apply plugin: 'com.google.gms.google-services'
 
+// A publisher may supply its registered OpenSubtitles client key at build time.
+def subtitleApiKey = providers.environmentVariable('FERMATA_OPENSUBTITLES_API_KEY').getOrElse('').trim()
+if (!(subtitleApiKey ==~ /[A-Za-z0-9._~-]*/)) {
+    throw new GradleException('FERMATA_OPENSUBTITLES_API_KEY contains invalid characters')
+}
+
 android {
     defaultConfig {
         namespace = 'me.aap.fermata'
+        buildConfigField 'String', 'OPENSUBTITLES_API_KEY', '"' + subtitleApiKey + '"'
         applicationId project.getProperties().getOrDefault('APP_ID', 'me.aap.fermata')
         versionCode VERSION_CODE
         versionName VERSION_NAME

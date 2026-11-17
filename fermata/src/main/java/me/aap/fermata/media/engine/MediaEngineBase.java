@@ -3,6 +3,10 @@ package me.aap.fermata.media.engine;
 import static android.media.session.PlaybackState.STATE_PAUSED;
 import static android.media.session.PlaybackState.STATE_PLAYING;
 import static android.media.session.PlaybackState.STATE_STOPPED;
+import static me.aap.fermata.media.pref.PlayableItemPrefs.SUB_DOCUMENT;
+import static me.aap.fermata.media.pref.PlayableItemPrefs.SUB_DOCUMENT_ENCODING;
+import static me.aap.fermata.media.pref.PlayableItemPrefs.SUB_DOCUMENT_NAME;
+import static me.aap.fermata.media.pref.PlayableItemPrefs.SUB_OFF;
 import static me.aap.fermata.media.sub.SubGrid.Position.BOTTOM_CENTER;
 import static me.aap.fermata.media.sub.SubGrid.Position.BOTTOM_LEFT;
 import static me.aap.fermata.media.sub.SubGrid.Position.BOTTOM_RIGHT;
@@ -13,6 +17,9 @@ import static me.aap.utils.async.Completed.completedVoid;
 import static me.aap.utils.collection.CollectionUtils.comparing;
 import static me.aap.utils.text.TextUtils.timeToString;
 
+import android.net.Uri;
+import android.widget.Toast;
+
 import androidx.annotation.CallSuper;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -22,6 +29,7 @@ import java.util.Collections;
 import java.util.List;
 
 import me.aap.fermata.BuildConfig;
+import me.aap.fermata.R;
 import me.aap.fermata.addon.SubGenAddon;
 import me.aap.fermata.media.sub.FileSubtitles;
 import me.aap.fermata.media.sub.SubGrid;
@@ -54,8 +62,12 @@ public abstract class MediaEngineBase implements MediaEngine {
 		videoView = view;
 		if (view == null) return;
 		view.clearSubtitleSurface();
-		if (subMgr != null) subMgr.addSubtitleConsumer(view);
-		else selectSubtitleStream();
+		if (state == STATE_STOPPED) return;
+		if (subMgr != null && subMgr.getCurrentSubtitleStreamInfo() != null) {
+			subMgr.addSubtitleConsumer(view);
+		} else {
+			selectSubtitleStream();
+		}
 	}
 
 	protected boolean isPlaying() {
@@ -71,8 +83,7 @@ public abstract class MediaEngineBase implements MediaEngine {
 	}
 
 	protected long subSchedulerClock() {
-		var pos = getSubtitlePosition();
-		return pos.isDoneNotFailed() ? pos.getOrThrow() : System.currentTimeMillis();
+		return android.os.SystemClock.elapsedRealtime();
 	}
 
 	public FutureSupplier<List<SubtitleStreamInfo>> getSubtitleStreamInfo() {
@@ -86,24 +97,23 @@ public abstract class MediaEngineBase implements MediaEngine {
 
 		return srcFile.getParent().then(srcDir -> {
 			if (srcDir == null) return completedEmptyList();
-			var filter = srcDir.filterChildren();
-			for (var ext : FileSubtitles.getSupportedFileExtensions())
-				filter = filter.or().startsEnds(baseName, ext);
-			return filter.apply();
+			return srcDir.getChildren();
+		}).ifFail(err -> {
+			Log.w(err, "Unable to discover sidecar subtitles");
+			return Collections.emptyList();
 		}).map(children -> {
-			if (children.isEmpty()) return Collections.emptyList();
-
 			int id = 0xFFFF;
 			var list = new ArrayList<SubtitleStreamInfo>();
-			Collections.sort(children, comparing(VirtualResource::getName));
+			var files = new ArrayList<>(children);
+			files.sort(comparing(VirtualResource::getName));
 
-			for (var f : children) {
-				if (!f.isFile()) continue;
+			for (var f : files) {
+				if (!f.isFile() || !FileSubtitles.isSidecar(baseName, f.getName())) continue;
 				var name = f.getName();
 				var langStart = baseName.length() + 1;
 				var langEnd = name.length() - 4;
 				var lang = langStart >= langEnd ? null : name.substring(langStart, langEnd);
-				list.add(new SubtitleStreamInfo(id++, lang, null, (VirtualFile) f));
+				list.add(new SubtitleStreamInfo(id++, lang, name, (VirtualFile) f));
 			}
 
 			for (int i = 0, n = list.size(); i < n; i++) {
@@ -112,7 +122,36 @@ public abstract class MediaEngineBase implements MediaEngine {
 				}
 			}
 
+			var prefs = src.getPrefs();
+			var document = prefs.getStringPref(SUB_DOCUMENT);
+			if (!document.isEmpty()) {
+				list.add(new SubtitleStreamInfo.External(Uri.parse(document),
+						prefs.getStringPref(SUB_DOCUMENT_NAME), prefs.getStringPref(SUB_DOCUMENT_ENCODING)));
+			}
 			return list;
+		});
+	}
+
+	@Override
+	public FutureSupplier<Void> selectSubtitleStream() {
+		var src = getSource();
+		if (src == null) return completedVoid();
+		var prefs = src.getPrefs();
+		var id = prefs.getSubIdPref();
+		if (!prefs.getSubEnabledPref() || (id != null && id == SUB_OFF)) return completedVoid();
+		return MediaEngine.super.selectSubtitleStream().then(v -> {
+			if (id != null || getSource() != src || getCurrentSubtitleStreamInfo() != null ||
+					!src.isVideo()) return completedVoid();
+			return getSubtitleStreamInfo().main().map(streams -> {
+				if (getSource() != src || getCurrentSubtitleStreamInfo() != null ||
+						prefs.getSubIdPref() != null || !prefs.getSubEnabledPref()) return null;
+				for (var stream : streams) {
+					if (stream.getFiles().size() != 1) continue;
+					setCurrentSubtitleStream(stream);
+					break;
+				}
+				return null;
+			});
 		});
 	}
 
@@ -167,20 +206,22 @@ public abstract class MediaEngineBase implements MediaEngine {
 	@Override
 	public void close() {
 		stopped(false);
+		videoView = null;
 	}
 
 	protected void started() {
 		if (state == STATE_PLAYING) return;
 		if (state == STATE_PAUSED) {
-			if (subMgr != null) subMgr.start();
 			state = STATE_PLAYING;
+			if (subMgr != null) subMgr.start();
 			return;
 		}
 
 		state = STATE_PLAYING;
 
 		if (videoView != null) {
-			if (subMgr != null) subMgr.addSubtitleConsumer(videoView);
+			if (subMgr != null && subMgr.getCurrentSubtitleStreamInfo() != null)
+				subMgr.addSubtitleConsumer(videoView);
 			else selectSubtitleStream();
 		} else {
 			var src = getSource();
@@ -195,7 +236,6 @@ public abstract class MediaEngineBase implements MediaEngine {
 			if (subMgr != null) subMgr.stop(true);
 		} else {
 			state = STATE_STOPPED;
-			videoView = null;
 			if (subMgr != null) {
 				subMgr.stop(false);
 				subMgr = null;
@@ -229,10 +269,7 @@ public abstract class MediaEngineBase implements MediaEngine {
 			delay = milliseconds;
 			if (sub != null) {
 				getSubtitlePosition().then(pos -> getSpeed().main().onSuccess(speed -> {
-					if (sub != null) {
-						sub.stop(false);
-						sub.start(getSubtitleDelay(), getSubtitleDelay(), speed);
-					}
+					sync(pos, speed, true);
 				}));
 			}
 		}
@@ -262,7 +299,7 @@ public abstract class MediaEngineBase implements MediaEngine {
 			consumers.add(consumer);
 			if (consumer == videoView) prepareDrawer(videoView);
 			if (sub == null) load();
-			else if ((state == STATE_PLAYING) && !sub.isStarted()) start();
+			else if ((state != STATE_STOPPED) && !sub.isStarted()) start();
 		}
 
 		void removeSubtitleConsumer(@NonNull BiConsumer<SubGrid.Position, Subtitles.Text> consumer) {
@@ -280,6 +317,8 @@ public abstract class MediaEngineBase implements MediaEngine {
 
 			if (inf instanceof SubtitleStreamInfo.Generated) {
 				load = completed(createSubStreamGrid());
+			} else if (inf instanceof SubtitleStreamInfo.External external) {
+				load = App.get().execute(() -> external.load(App.get()));
 			} else if (!inf.getFiles().isEmpty()) {
 				load = App.get().execute(() -> {
 					var src = getSource();
@@ -289,7 +328,8 @@ public abstract class MediaEngineBase implements MediaEngine {
 					var sg = FileSubtitles.load(files.get(0));
 
 					if (files.size() == 1) {
-						if (!src.isVideo()) sg.mergeAtPosition(BOTTOM_LEFT);
+						if (sg.isEmpty()) throw new java.io.IOException("No valid subtitle cues found");
+						sg.mergeAtPosition(src.isVideo() ? BOTTOM_CENTER : BOTTOM_LEFT);
 						return sg;
 					}
 
@@ -320,8 +360,15 @@ public abstract class MediaEngineBase implements MediaEngine {
 				if ((sg == null) || (sub != null) || (inf != streamInfo)) return null;
 				sub = new SubScheduler(App.get().getHandler(), sg, this,
 						MediaEngineBase.this::subSchedulerClock);
-				if ((state == STATE_PLAYING) && !consumers.isEmpty()) start();
+				if ((state != STATE_STOPPED) && !consumers.isEmpty()) start();
 				return sub;
+			}).onFailure(err -> {
+				if (!loading.isCancelled() && inf == streamInfo) {
+					Log.w(err, "Unable to load subtitles");
+					var ctx = App.get();
+					Toast.makeText(ctx, ctx.getString(R.string.subtitle_document_error,
+							err.getLocalizedMessage()), Toast.LENGTH_LONG).show();
+				}
 			});
 		}
 
@@ -349,14 +396,15 @@ public abstract class MediaEngineBase implements MediaEngine {
 			SubScheduler sub = this.sub;
 			if (sub == null) return;
 			getSubtitlePosition().then(pos -> getSpeed().main().onSuccess(speed -> {
-				if (sub != this.sub) return;
+				if (sub != this.sub || state == STATE_STOPPED) return;
 				for (@NonNull var c : consumers) {
 					if (c == videoView) {
 						prepareDrawer(videoView);
 						break;
 					}
 				}
-				sub.start(pos, delay, speed);
+				if (isPaused()) sub.preview(pos, delay);
+				else sub.start(pos, delay, speed);
 			}));
 		}
 
@@ -378,8 +426,8 @@ public abstract class MediaEngineBase implements MediaEngine {
 			if (sub == null) return;
 			if (restart) {
 				sub.stop(false);
-				sub.start(position, getSubtitleDelay(), speed);
-				if (!isPlaying()) App.get().getHandler().submit(() -> {if (!isPlaying()) sub.stop(true);});
+				if (isPlaying()) sub.start(position, delay, speed);
+				else sub.preview(position, delay);
 			} else {
 				sub.sync(position, getSubtitleDelay(), speed);
 			}

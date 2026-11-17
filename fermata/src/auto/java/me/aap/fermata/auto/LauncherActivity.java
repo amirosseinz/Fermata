@@ -188,20 +188,18 @@ public class LauncherActivity extends AppCompatActivity {
 			var exitApp = AppInfo.EXIT.pkg + '#' + AppInfo.EXIT.name;
 
 			for (var app : selectedApps) {
+				if (app.equals(addApp)) {
+					apps.add(AppInfo.ADD);
+					addApp = null;
+					continue;
+				}
+				if (app.equals(exitApp)) {
+					apps.add(AppInfo.EXIT);
+					continue;
+				}
 				for (var info : allApps) {
 					var pkg = info.activityInfo.packageName;
-					if (app.equals(addApp)) {
-						apps.add(AppInfo.ADD);
-						addApp = null;
-						break;
-					}
-					if (app.equals(exitApp)) {
-						apps.add(AppInfo.EXIT);
-						break;
-					}
-					if (app.startsWith(pkg) && (app.equals(pkg) ||
-							(app.endsWith(info.activityInfo.name) && (app.charAt(pkg.length()) == '#') &&
-									(app.length() == (pkg.length() + info.activityInfo.name.length() + 1))))) {
+					if (app.equals(pkg) || app.equals(pkg + '#' + info.activityInfo.name)) {
 						apps.add(new AppInfo(info.activityInfo.packageName, info.activityInfo.name,
 								info.loadLabel(pm).toString(), info.loadIcon(pm)));
 						break;
@@ -225,7 +223,7 @@ public class LauncherActivity extends AppCompatActivity {
 				if (app.selected) {
 					if (!apps.contains(app)) {
 						var idx = apps.size();
-						if (apps.get(idx - 1).equals(AppInfo.ADD)) idx -= 1;
+						if (idx > 0 && apps.get(idx - 1).equals(AppInfo.ADD)) idx -= 1;
 						var ai = new AppInfo(app.pkg, app.name, app.label, app.icon());
 						apps.add(idx, AppInfo.EXIT.equals(ai) ? AppInfo.EXIT : ai);
 					}
@@ -350,6 +348,9 @@ public class LauncherActivity extends AppCompatActivity {
 
 			void setAppInfo(AppInfo appInfo) {
 				this.appInfo = appInfo;
+				if (appInfo == AppInfo.ADD) setContentDescription(getContext().getString(R.string.mirror_choose_apps));
+				else if (appInfo == AppInfo.BACK) setContentDescription(getContext().getString(R.string.mirror_save_apps));
+				else setContentDescription(null);
 
 				if (appInfo == AppInfo.ADD) {
 					icon.setImageDrawable(addIcon);

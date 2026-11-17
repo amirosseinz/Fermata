@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
+    <exclude domain="sharedpref" path="online-subtitles.xml" />
     <exclude
         domain="sharedpref"
         path="folders.xml" />

@@ -62,6 +62,14 @@ public class SubScheduler {
 		assert !started;
 	}
 
+	public void preview(long time, int delay) {
+		for (var worker : workers) {
+			long position = time - delay;
+			var text = worker.subtitles.getNext(position);
+			consumer.accept(worker.pos, text != null && text.getTime() <= position ? text : null);
+		}
+	}
+
 	public boolean isStarted() {
 		return started;
 	}
@@ -69,7 +77,7 @@ public class SubScheduler {
 	public void sync(long time, int delay, float speed) {
 		assert speed > 0;
 		if (!started) return;
-		this.time = time + delay;
+		this.time = time - delay;
 		this.speed = speed;
 		syncTime = clock.getAsLong();
 		for (var w : workers) {
@@ -102,7 +110,7 @@ public class SubScheduler {
 
 			long delay = text.getTime() - time;
 
-			if (delay > 500) {
+			if (delay > 0) {
 				consumer.accept(pos, null);
 				sched(delay);
 			} else {
@@ -132,9 +140,7 @@ public class SubScheduler {
 
 		private void sched(long delay) {
 			if (!started) return;
-			delay /= speed;
-			if (delay > 0) sched = executor.schedule(this, delay);
-			else sched = CANCELED;
+			sched = executor.schedule(this, Math.max(1L, (long) Math.ceil(delay / (double) speed)));
 		}
 	}
 }

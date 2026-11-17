@@ -42,6 +42,7 @@ public class BodyLayout extends SplitLayout
 		MainActivityListener, FermataServiceUiBinder.Listener, MediaSessionCallback.Listener {
 	private Mode mode;
 	private FutureSupplier<?> startingPlayback = completedVoid();
+	private long playRequest;
 
 	public BodyLayout(@NonNull Context ctx, @Nullable AttributeSet attrs) {
 		super(ctx, attrs);
@@ -96,6 +97,7 @@ public class BodyLayout extends SplitLayout
 
 		switch (mode) {
 			case FRAME -> {
+				++playRequest;
 				vv.setVisibility(GONE);
 				getSplitLine().setVisibility(GONE);
 				getSplitHandle().setVisibility(GONE);
@@ -126,6 +128,7 @@ public class BodyLayout extends SplitLayout
 		}
 
 		gl.setLayoutParams(lp);
+		refreshFullscreenShortcut(a);
 		a.fireBroadcastEvent(MODE_CHANGED);
 	}
 
@@ -146,6 +149,7 @@ public class BodyLayout extends SplitLayout
 	@Override
 	public void onActivityEvent(MainActivityDelegate a, long e) {
 		if (handleActivityDestroyEvent(a, e)) {
+			++playRequest;
 			FermataServiceUiBinder b = a.getMediaServiceBinder();
 			b.removeBroadcastListener(this);
 			b.getMediaSessionCallback().removeBroadcastListener(this);
@@ -173,17 +177,41 @@ public class BodyLayout extends SplitLayout
 		}
 	}
 
+	private boolean canShowVideo(MainActivityDelegate a) {
+		var engine = a.getMediaServiceBinder().getCurrentEngine();
+		var source = engine == null ? null : engine.getSource();
+		return source != null && source.isVideo() && engine.isVideoModeRequired() && engine.isSplitModeSupported();
+	}
+
+	void refreshFullscreenShortcut(MainActivityDelegate a) {
+		var controls = a.getControlPanel();
+		if (controls != null) controls.updateFullscreenShortcut(canShowVideo(a), isVideoMode());
+	}
+
+	void toggleCurrentVideo() {
+		var a = getActivity();
+		if (!canShowVideo(a)) return;
+		if (!isVideoMode()) setMode(Mode.VIDEO);
+		else setMode(a.getActiveMediaLibFragment() != null ? Mode.BOTH : Mode.FRAME);
+	}
+
 	public void playItem(MediaLib.PlayableItem i) {
 		startingPlayback.cancel();
-		MainActivityDelegate a = getActivity();
-
-		if (i.isVideo() && !getVideoView().isSurfaceCreated() &&
-				!a.getMediaSessionCallback().hasCustomEngineProvider()) {
-			setMode(BodyLayout.Mode.VIDEO);
-			getVideoView().onSurfaceCreated(() -> playItem(i));
-			return;
+		long request = ++playRequest;
+		var a = getActivity();
+		if (i.isVideo() && !a.getMediaSessionCallback().hasCustomEngineProvider()) {
+			if (isFrameMode()) setMode(Mode.VIDEO);
+			if (!getVideoView().isSurfaceCreated()) {
+				getVideoView().onSurfaceCreated(() -> {
+					if (request == playRequest) startItem(a, i);
+				});
+				return;
+			}
 		}
+		startItem(a, i);
+	}
 
+	private void startItem(MainActivityDelegate a, MediaLib.PlayableItem i) {
 		FermataServiceUiBinder b = a.getMediaServiceBinder();
 		MediaLib.PlayableItem cur = b.getCurrentItem();
 		startingPlayback = new Promise<Void>().thenRun(() -> startingPlayback = completedVoid());
@@ -198,9 +226,15 @@ public class BodyLayout extends SplitLayout
 	public void onPlayableChanged(MediaLib.PlayableItem oldItem, MediaLib.PlayableItem newItem) {
 		startingPlayback.cancel();
 		MainActivityDelegate a = getActivity();
-		if (!(a.getActiveFragment() instanceof MainActivityFragment f)) return;
+		if (!(a.getActiveFragment() instanceof MainActivityFragment f)) {
+			refreshFullscreenShortcut(a);
+			return;
+		}
 		if (f instanceof SubtitlesFragment) a.goToCurrent();
-		else if (!f.isVideoModeSupported()) return;
+		else if (!f.isVideoModeSupported()) {
+			refreshFullscreenShortcut(a);
+			return;
+		}
 		MediaEngine eng = a.getMediaServiceBinder().getCurrentEngine();
 
 		if ((newItem == null) || !newItem.isVideo() || (eng == null) || !eng.isSplitModeSupported()) {
@@ -210,6 +244,7 @@ public class BodyLayout extends SplitLayout
 			else if (isFrameMode()) setMode(Mode.VIDEO);
 			else getVideoView().showVideo(false);
 		}
+		refreshFullscreenShortcut(a);
 
 		if ((eng != null) && (newItem != null) && !newItem.isVideo() && (getMode() == Mode.FRAME)) {
 			eng.selectSubtitleStream();

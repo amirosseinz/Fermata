@@ -64,6 +64,7 @@ public class ControlPanelSeekView extends AppCompatSeekBar {
 		inflate(ctx, layout, l);
 		ConstraintSet cs = new ConstraintSet();
 		cs.clone(l);
+		cs.setVisibilityMode(R.id.control_subtitles, ConstraintSet.VISIBILITY_MODE_IGNORE);
 		return cs;
 	}
 
