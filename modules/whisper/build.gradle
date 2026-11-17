@@ -5,7 +5,17 @@ android {
         versionName '1.0'
         externalNativeBuild {
             cmake {
-                arguments '-DCMAKE_BUILD_TYPE=Release'
+                arguments '-DCMAKE_BUILD_TYPE=Release',
+                        "-DFERMATA_WHISPER_VULKAN=${project.findProperty('WHISPER_VULKAN') ?: 'ON'}"
+                if (project.hasProperty('WHISPER_SOURCE')) {
+                    arguments "-DFETCHCONTENT_SOURCE_DIR_WHISPERCPP=${project.property('WHISPER_SOURCE')}"
+                }
+                if (project.hasProperty('WHISPER_VULKAN_HEADERS_SOURCE')) {
+                    arguments "-DFETCHCONTENT_SOURCE_DIR_VULKAN-HEADERS=${project.property('WHISPER_VULKAN_HEADERS_SOURCE')}"
+                }
+                if (project.hasProperty('WHISPER_SPIRV_SOURCE')) {
+                    arguments "-DFETCHCONTENT_SOURCE_DIR_SPIRV-HEADERS=${project.property('WHISPER_SPIRV_SOURCE')}"
+                }
             }
         }
     }
