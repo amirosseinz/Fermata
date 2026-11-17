@@ -19,7 +19,9 @@ Fermata also plays music and playlists on Android and supports Android TV. Other
 
 ## Getting started
 
-This fork is based on Fermata **2.0.2**. Its APK reports the build version `2.0.2-subtitle.7` and runs on ARM64 devices with Android 9 or later. Its launcher label is **Fermata Auto**. Download APKs from this fork's GitHub releases or the original project's GitHub releases. Fermata is free. Avoid third-party sites that imitate the project.
+**Fermata 2.1.0 (fork)** is the planned release of these changes, based on upstream Fermata **2.0.2**. The current test APK displays `2.0.2-subtitle.7`.
+
+The test APK runs on ARM64 devices with Android 9 or later and appears in the phone launcher as **Fermata Auto**. Fermata is free.
 
 - **External subtitles** · Start a video on the phone. Open **Subtitles → Load external subtitles** and choose an SRT or VTT file.
 - **Automatic captions** · Enable ExoPlayer and open **Whisper models** on the phone to download a model. Choose **Generate captions** during playback. Model downloads require internet access.
