@@ -25,6 +25,7 @@ import androidx.annotation.Nullable;
 import java.util.Objects;
 
 import me.aap.fermata.FermataApplication;
+import me.aap.fermata.R;
 import me.aap.fermata.media.engine.MediaEngine;
 import me.aap.fermata.media.lib.MediaLib;
 import me.aap.fermata.media.lib.MediaLib.PlayableItem;
@@ -493,27 +494,21 @@ public class FermataServiceUiBinder extends BasicEventBroadcaster<FermataService
 				if (ffButton != null) ffButton.setVisibility(GONE);
 			}
 
-			if (st == STATE_PLAYING) {
+			boolean playing = st == STATE_PLAYING;
+			if (playing) {
 				updateDuration = (dur <= 0);
 				if (canSeek) startProgressUpdate();
 				else stopProgressUpdate();
-
-				if (playPauseButton != null) {
-					if (eng.canPause()) {
-						playPauseButton.setSelected(false);
-						playPauseButton.setActivated(true);
-					} else {
-						playPauseButton.setSelected(false);
-						playPauseButton.setActivated(false);
-					}
-				}
 			} else {
 				stopProgressUpdate();
+			}
 
-				if (playPauseButton != null) {
-					playPauseButton.setSelected(true);
-					playPauseButton.setActivated(false);
-				}
+			if (playPauseButton != null) {
+				boolean canPause = eng.canPause();
+				playPauseButton.setSelected(!playing);
+				playPauseButton.setActivated(playing && canPause);
+				int action = !playing ? R.string.play : canPause ? R.string.pause : R.string.stop;
+				playPauseButton.setContentDescription(playPauseButton.getContext().getText(action));
 			}
 
 			showPanel(true);

@@ -5,11 +5,16 @@ import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.text.InputType;
+import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.ScrollView;
 import android.widget.Spinner;
+import android.widget.TextView;
+
+import androidx.annotation.StringRes;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -17,6 +22,7 @@ import java.io.IOException;
 import java.util.Locale;
 
 import me.aap.fermata.BuildConfig;
+import me.aap.fermata.R;
 import me.aap.fermata.media.engine.SubtitleStreamInfo;
 import me.aap.fermata.media.lib.MediaLib.PlayableItem;
 import me.aap.fermata.media.sub.OpenSubtitlesClient;
@@ -49,7 +55,8 @@ final class OnlineSubtitleSearch {
 
 	void show() {
 		var view = form();
-		var title = field(view, "Movie name or series S01E02", false);
+		var title = field(view, R.string.subtitle_search_title, false);
+		title.setHint(R.string.subtitle_search_title_hint);
 		var filename = video.getResource().getName();
 		int extension = filename.lastIndexOf('.');
 		var suggested = (extension > 0 ? filename.substring(0, extension) : filename)
@@ -64,14 +71,14 @@ final class OnlineSubtitleSearch {
 		int defaultLanguage = Locale.getDefault().getLanguage().equals("fa") ? 1 : 0;
 		language.setSelection(Math.max(0, Math.min(CODES.length - 1,
 				preferences.getInt("language", defaultLanguage))));
-		view.addView(language);
+		addLabeledControl(view, R.string.subtitle_search_language, language);
 		var configuredKey = BuildConfig.OPENSUBTITLES_API_KEY;
 		boolean usePublisherKey = !configuredKey.isEmpty();
-		var key = usePublisherKey ? null : field(view, "OpenSubtitles API key", true);
+		var key = usePublisherKey ? null : field(view, R.string.subtitle_search_api_key, true);
 		if (key != null) key.setText(preferences.getString("api-key", ""));
 
 		var dialog = new AlertDialog.Builder(context).setTitle("Find subtitles online")
-				.setView(view).setMessage("Search OpenSubtitles by video match or title.")
+				.setView(scroll(view)).setMessage("Search OpenSubtitles by video match or title.")
 				.setPositiveButton("Search", null)
 				.setNeutralButton("Open website", (d, which) -> openWebsite(title.getText().toString(),
 						language.getSelectedItemPosition()))
@@ -110,11 +117,13 @@ final class OnlineSubtitleSearch {
 
 	private void authenticate(OpenSubtitlesClient client, OpenSubtitlesClient.Result result) {
 		var view = form();
-		var user = field(view, "OpenSubtitles username", false);
-		var pass = field(view, "OpenSubtitles password", true);
+		var user = field(view, R.string.subtitle_search_username, false);
+		var pass = field(view, R.string.subtitle_search_password, true);
+		user.setAutofillHints(View.AUTOFILL_HINT_USERNAME);
+		pass.setAutofillHints(View.AUTOFILL_HINT_PASSWORD);
 		var dialog = new AlertDialog.Builder(context).setTitle("Download subtitle")
 				.setMessage("Sign in to OpenSubtitles to download. Fermata does not save your password.")
-				.setView(view).setPositiveButton("Download", null)
+				.setView(scroll(view)).setPositiveButton("Download", null)
 				.setNegativeButton(android.R.string.cancel, null).show();
 		dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button -> {
 			var username = user.getText().toString().trim();
@@ -175,13 +184,30 @@ final class OnlineSubtitleSearch {
 		return layout;
 	}
 
-	private EditText field(LinearLayout parent, String hint, boolean secret) {
+	private ScrollView scroll(LinearLayout contents) {
+		var scroll = new ScrollView(context);
+		scroll.addView(contents);
+		return scroll;
+	}
+
+	private EditText field(LinearLayout parent, @StringRes int label, boolean secret) {
 		var field = new EditText(context);
 		field.setSingleLine();
-		field.setHint(hint);
 		if (secret) field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-		parent.addView(field);
+		addLabeledControl(parent, label, field);
 		return field;
+	}
+
+	private void addLabeledControl(LinearLayout parent, @StringRes int title, View control) {
+		int spacing = me.aap.utils.ui.UiUtils.toIntPx(context, 8);
+		var label = new TextView(context);
+		label.setText(title);
+		label.setPadding(0, spacing, 0, 0);
+		control.setId(View.generateViewId());
+		label.setLabelFor(control.getId());
+		control.setMinimumHeight(me.aap.utils.ui.UiUtils.toIntPx(context, 48));
+		parent.addView(label);
+		parent.addView(control, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
 	}
 
 	private <T> void run(String title, FutureSupplier<T> work, Consumer<T> result) {

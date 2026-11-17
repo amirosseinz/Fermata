@@ -185,7 +185,11 @@ public class BodyLayout extends SplitLayout
 
 	void refreshFullscreenShortcut(MainActivityDelegate a) {
 		var controls = a.getControlPanel();
-		if (controls != null) controls.updateFullscreenShortcut(canShowVideo(a), isVideoMode());
+		if (controls == null) return;
+		var engine = a.getMediaServiceBinder().getCurrentEngine();
+		var source = engine == null ? null : engine.getSource();
+		boolean subtitlesAvailable = source != null && source.isVideo() && engine.isSubtitlesSupported();
+		controls.updateVideoShortcuts(canShowVideo(a), isVideoMode(), subtitlesAvailable);
 	}
 
 	void toggleCurrentVideo() {

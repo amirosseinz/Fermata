@@ -13,12 +13,14 @@ import android.content.Context;
 import android.content.Intent;
 import android.provider.OpenableColumns;
 import android.content.res.TypedArray;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Parcelable;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.accessibility.AccessibilityManager;
 import android.widget.ImageView;
 import android.widget.TextView;
 
@@ -53,6 +55,7 @@ import me.aap.fermata.ui.activity.MainActivityListener;
 import me.aap.fermata.ui.activity.MainActivityPrefs;
 import me.aap.utils.app.App;
 import me.aap.utils.async.FutureSupplier;
+import me.aap.utils.function.Cancellable;
 import me.aap.utils.function.ResultConsumer;
 import me.aap.utils.log.Log;
 import me.aap.utils.function.BooleanSupplier;
@@ -86,6 +89,7 @@ public class ControlPanelView extends ConstraintLayout
 	private final int textAppearance;
 	private PlaybackControlPrefs prefs;
 	private HideTimer hideTimer;
+	private Cancellable hideTask = Cancellable.CANCELED;
 	private byte mask;
 	private View gestureSource;
 	private TextView playbackTimer;
@@ -114,6 +118,13 @@ public class ControlPanelView extends ConstraintLayout
 		g.setOnClickListener(this::showMenu);
 		findViewById(R.id.control_subtitles).setOnClickListener(this::showSubtitleMenu);
 		findViewById(R.id.control_fullscreen).setOnClickListener(v -> getActivity().getBody().toggleCurrentVideo());
+		if (!a.isCarActivity()) {
+			for (int id : new int[]{R.id.control_menu_button, R.id.control_subtitles, R.id.control_prev,
+					R.id.control_rw, R.id.control_ff, R.id.control_next}) {
+				View control = findViewById(id);
+				control.setTooltipText(control.getContentDescription());
+			}
+		}
 		setShowHideBarsIcon(a);
 	}
 
@@ -166,57 +177,58 @@ public class ControlPanelView extends ConstraintLayout
 		float textSize = getTextAppearanceSize(getContext(), textAppearance) * scale;
 		int textPad = seekTime.getPaddingTop() + seekTime.getPaddingBottom();
 		int pad = 2 * toIntPx(getContext(), 4) + textPad;
-		int minimumTarget = toIntPx(getContext(), 48);
+		boolean onCar = getActivity().isCarActivity();
+		int minimumTarget = toIntPx(getContext(), onCar ? 76 : 48);
 		int iconSize = Math.max(minimumTarget, (int) (textSize + pad));
 		int buttonSize = Math.max(minimumTarget, (int) (size * scale - textSize - pad));
-		int panelSize = iconSize + buttonSize;
 		ControlPanelSeekView seek = findViewById(R.id.seek_bar);
-		setHeight(R.id.control_subtitles, seek.isEnabled() ? iconSize : buttonSize);
-		setHeight(R.id.control_fullscreen, seek.isEnabled() ? iconSize : buttonSize);
+		boolean twoRows = seek.usesTwoRows();
+		int shortcutHeight = twoRows ? iconSize : buttonSize;
+		int shortcutWidth = twoRows ? minimumTarget : 0;
+		setDimensions(R.id.control_subtitles, shortcutWidth, shortcutHeight);
+		setDimensions(R.id.control_fullscreen, shortcutWidth, shortcutHeight);
+		setHeight(R.id.show_hide_bars, shortcutHeight);
+		setHeight(R.id.control_menu_button, shortcutHeight);
+		findViewById(R.id.show_hide_bars).setMinimumWidth(shortcutWidth);
+		findViewById(R.id.control_menu_button).setMinimumWidth(shortcutWidth);
+		int icon = toIntPx(getContext(), onCar ? 36 : 24);
+		setDimensions(R.id.show_hide_bars_icon, icon, icon);
+		setDimensions(R.id.control_menu_button_icon, icon, icon);
 
-		if (seek.isEnabled()) {
+		if (twoRows) {
 			setHeight(seek, iconSize);
-			setSize(R.id.show_hide_bars_icon, iconSize);
-			setSize(R.id.control_menu_button_icon, iconSize);
-			seTextAppearance(seekTime, textSize);
-			seTextAppearance(seekTotal, textSize);
-			setHeight(R.id.control_prev, buttonSize);
+			setTextAppearance(seekTime, textSize);
+			setTextAppearance(seekTotal, textSize);
 			setHeight(R.id.control_rw, buttonSize);
-			setHeight(R.id.control_play_pause, buttonSize);
 			setHeight(R.id.control_ff, buttonSize);
-		} else {
-			panelSize = buttonSize;
-			setSize(R.id.show_hide_bars_icon, buttonSize);
-			setSize(R.id.control_menu_button_icon, buttonSize);
-			setHeight(R.id.control_prev, buttonSize);
-			setHeight(R.id.control_play_pause, buttonSize);
 		}
-
+		setHeight(R.id.control_prev, buttonSize);
+		setHeight(R.id.control_play_pause, buttonSize);
 		setHeight(R.id.control_next, buttonSize);
-		getLayoutParams().height = panelSize;
+		getLayoutParams().height = twoRows ? iconSize + buttonSize : buttonSize;
 	}
 
-	private void seTextAppearance(TextView t, float size) {
+	private void setTextAppearance(TextView t, float size) {
 		t.setTextAppearance(textAppearance);
 		t.setTextSize(COMPLEX_UNIT_PX, size);
 	}
 
-	private void setSize(@IdRes int id, int size) {
+	private void setDimensions(@IdRes int id, int width, int height) {
 		View v = findViewById(id);
 		ViewGroup.LayoutParams lp = v.getLayoutParams();
-		lp.width = lp.height = size;
+		if (lp.width == width && lp.height == height) return;
+		lp.width = width;
+		lp.height = height;
 		v.setLayoutParams(lp);
 	}
 
 	private void setHeight(@IdRes int id, int h) {
-		View v = findViewById(id);
-		ViewGroup.LayoutParams lp = v.getLayoutParams();
-		lp.height = h;
-		v.setLayoutParams(lp);
+		setHeight(findViewById(id), h);
 	}
 
 	private void setHeight(View v, int h) {
 		ViewGroup.LayoutParams lp = v.getLayoutParams();
+		if (lp.height == h) return;
 		lp.height = h;
 		v.setLayoutParams(lp);
 	}
@@ -255,9 +267,8 @@ public class ControlPanelView extends ConstraintLayout
 
 	public void enableVideoMode(@Nullable VideoView v) {
 		MainActivityDelegate a = getActivity();
-		hideTimer = null;
+		cancelHide();
 		mask |= MASK_VIDEO_MODE;
-		findViewById(R.id.control_subtitles).setVisibility(VISIBLE);
 
 		a.setBarsHidden(true);
 		setShowHideBarsIcon(a);
@@ -274,8 +285,7 @@ public class ControlPanelView extends ConstraintLayout
 			fb.setVisibility(VISIBLE);
 			if (info != null) info.setVisibility(VISIBLE);
 			super.setVisibility(VISIBLE);
-			hideTimer = new HideTimer(a, delay, false, info, fb);
-			a.postDelayed(hideTimer, delay);
+			scheduleHide(a, delay, false, info, fb);
 		}
 
 		checkPlaybackTimer(a);
@@ -283,9 +293,8 @@ public class ControlPanelView extends ConstraintLayout
 
 	public void disableVideoMode() {
 		MainActivityDelegate a = getActivity();
-		hideTimer = null;
+		cancelHide();
 		mask &= ~MASK_VIDEO_MODE;
-		findViewById(R.id.control_subtitles).setVisibility(GONE);
 		a.getFloatingButton().setVisibility(VISIBLE);
 
 		if ((mask & MASK_VISIBLE) == 0) {
@@ -302,11 +311,7 @@ public class ControlPanelView extends ConstraintLayout
 	@Override
 	public boolean onInterceptTouchEvent(MotionEvent e) {
 		MainActivityDelegate a = getActivity();
-		if (hideTimer != null) {
-			int delay = getTouchDelay();
-			hideTimer = new HideTimer(a, delay, false, hideTimer.views);
-			a.postDelayed(hideTimer, delay);
-		}
+		if (hideTimer != null) scheduleHide(a, getTouchDelay(), false, hideTimer.views);
 		return a.interceptTouchEvent(e, me -> {
 			gestureSource = this;
 			gestureDetector.onTouchEvent(me);
@@ -409,6 +414,7 @@ public class ControlPanelView extends ConstraintLayout
 		View fb = a.getFloatingButton();
 
 		if (getVisibility() == VISIBLE) {
+			cancelHide();
 			super.setVisibility(GONE);
 			fb.setVisibility(GONE);
 			if (a.getPrefs().getSysBarsOnVideoTouchPref()) a.setFullScreen(true);
@@ -419,8 +425,7 @@ public class ControlPanelView extends ConstraintLayout
 			if (a.getPrefs().getSysBarsOnVideoTouchPref()) a.setFullScreen(false);
 			if (info != null) info.setVisibility(VISIBLE);
 			clearFocus();
-			hideTimer = new HideTimer(a, delay, false, info, fb);
-			a.postDelayed(hideTimer, delay);
+			scheduleHide(a, delay, false, info, fb);
 		}
 
 		checkPlaybackTimer(a);
@@ -448,8 +453,7 @@ public class ControlPanelView extends ConstraintLayout
 		fb.setVisibility(VISIBLE);
 		if (info != null) info.setVisibility(VISIBLE);
 		clearFocus();
-		hideTimer = new HideTimer(a, delay, true, info, fb);
-		a.postDelayed(hideTimer, delay);
+		scheduleHide(a, delay, true, info, fb);
 		checkPlaybackTimer(a);
 	}
 
@@ -461,6 +465,7 @@ public class ControlPanelView extends ConstraintLayout
 	@Override
 	public void onActivityEvent(MainActivityDelegate a, long e) {
 		if (handleActivityDestroyEvent(a, e)) {
+			cancelHide();
 			a.getMediaServiceBinder().unbind();
 			a.getPrefs().removeBroadcastListener(this);
 		}
@@ -481,7 +486,7 @@ public class ControlPanelView extends ConstraintLayout
 
 	public View focusSearch() {
 		View v = findViewById(R.id.seek_bar);
-		return isVisible(v) ? v : findViewById(R.id.control_play_pause);
+		return v.isEnabled() && isVisible(v) ? v : findViewById(R.id.control_play_pause);
 	}
 
 	@Override
@@ -508,6 +513,8 @@ public class ControlPanelView extends ConstraintLayout
 	}
 
 	private boolean isLine1(View v) {
+		ControlPanelSeekView seek = findViewById(R.id.seek_bar);
+		if (!seek.usesTwoRows()) return true;
 		int id = v.getId();
 		return id == R.id.seek_bar || id == R.id.show_hide_bars ||
 				id == R.id.control_subtitles || id == R.id.control_fullscreen || id == R.id.control_menu_button;
@@ -530,13 +537,21 @@ public class ControlPanelView extends ConstraintLayout
 		if (i != null) new MenuHandler(getMenu(a), i, eng).show();
 	}
 
-	void updateFullscreenShortcut(boolean available, boolean fullscreen) {
-		android.widget.ImageView button = findViewById(R.id.control_fullscreen);
+	void updateVideoShortcuts(boolean available, boolean fullscreen, boolean subtitlesAvailable) {
+		findViewById(R.id.control_subtitles).setVisibility(subtitlesAvailable ? VISIBLE : GONE);
+		ImageView button = findViewById(R.id.control_fullscreen);
 		button.setVisibility(available ? VISIBLE : GONE);
 		int label = fullscreen ? R.string.exit_fullscreen_video : R.string.show_fullscreen_video;
 		button.setImageResource(fullscreen ? R.drawable.player_fullscreen_exit : R.drawable.player_fullscreen);
 		button.setContentDescription(getContext().getText(label));
-		button.setTooltipText(getContext().getText(label));
+		if (!getActivity().isCarActivity()) button.setTooltipText(getContext().getText(label));
+		ControlPanelSeekView seek = findViewById(R.id.seek_bar);
+		seek.updateLayout();
+	}
+
+	boolean hasVideoShortcuts() {
+		return findViewById(R.id.control_fullscreen).getVisibility() == VISIBLE ||
+				findViewById(R.id.control_subtitles).getVisibility() == VISIBLE;
 	}
 
 	private void showSubtitleMenu(View view) {
@@ -553,8 +568,14 @@ public class ControlPanelView extends ConstraintLayout
 	}
 
 	private void setShowHideBarsIcon(MainActivityDelegate a) {
-		a.post(() -> showHideBars.setImageResource(
-				a.isBarsHidden() ? R.drawable.expand : me.aap.utils.R.drawable.collapse));
+		a.post(() -> {
+			boolean hidden = a.isBarsHidden();
+			showHideBars.setImageResource(hidden ? R.drawable.expand : me.aap.utils.R.drawable.collapse);
+			View button = findViewById(R.id.show_hide_bars);
+			CharSequence label = getContext().getText(hidden ? R.string.show_navigation : R.string.hide_navigation);
+			button.setContentDescription(label);
+			if (!a.isCarActivity()) button.setTooltipText(label);
+		});
 	}
 
 	private MainActivityDelegate getActivity() {
@@ -1165,6 +1186,25 @@ public class ControlPanelView extends ConstraintLayout
 		return (prefs == null) ? 3000 : prefs.getVideoControlSeekDelayPref() * 1000;
 	}
 
+	private void cancelHide() {
+		hideTask.cancel();
+		hideTask = Cancellable.CANCELED;
+		hideTimer = null;
+	}
+
+	private void scheduleHide(MainActivityDelegate activity, int delay, boolean seekMode, View... views) {
+		cancelHide();
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && delay > 0) {
+			var accessibility = getContext().getSystemService(AccessibilityManager.class);
+			if (accessibility != null) {
+				delay = accessibility.getRecommendedTimeoutMillis(delay,
+						AccessibilityManager.FLAG_CONTENT_ICONS | AccessibilityManager.FLAG_CONTENT_CONTROLS);
+			}
+		}
+		hideTimer = new HideTimer(activity, delay, seekMode, views);
+		hideTask = activity.postDelayed(hideTimer, delay);
+	}
+
 	private final class HideTimer implements Runnable {
 		final MainActivityDelegate activity;
 		final int delay;
@@ -1183,11 +1223,12 @@ public class ControlPanelView extends ConstraintLayout
 			if ((hideTimer != this) || ((mask & MASK_VIDEO_MODE) == 0)) return;
 
 			if (ControlPanelView.this.hasFocus()) {
-				hideTimer = new HideTimer(activity, delay, seekMode, views);
-				activity.postDelayed(hideTimer, delay);
+				hideTask = activity.postDelayed(this, Math.max(250, delay));
 				return;
 			}
 
+			hideTimer = null;
+			hideTask = Cancellable.CANCELED;
 			if (activity.getPrefs().getSysBarsOnVideoTouchPref()) activity.setFullScreen(true);
 			ControlPanelView.super.setVisibility(GONE);
 

@@ -427,6 +427,14 @@
     <string name="playback_volume_unavailable">Playback volume is unavailable for this output.</string>
     <string name="player_appearance">Appearance</string>
     <string name="player_options">Playback options</string>
+    <string name="show_navigation">Show navigation</string>
+    <string name="hide_navigation">Hide navigation</string>
+    <string name="subtitle_search_title">Video title</string>
+    <string name="subtitle_search_title_hint">Movie name or series S01E02</string>
+    <string name="subtitle_search_language">Subtitle language</string>
+    <string name="subtitle_search_api_key">OpenSubtitles API key</string>
+    <string name="subtitle_search_username">OpenSubtitles username</string>
+    <string name="subtitle_search_password">OpenSubtitles password</string>
     <string name="screen_nearby">Nearby Screen</string>
     <string name="screen_nearby_intro">Share screen video between Android phones running Fermata on the same local network.</string>
     <string name="screen_receive">Receive an Android screen</string>

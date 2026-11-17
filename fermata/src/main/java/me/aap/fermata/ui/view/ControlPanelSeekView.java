@@ -2,7 +2,6 @@ package me.aap.fermata.ui.view;
 
 import android.content.Context;
 import android.util.AttributeSet;
-import android.view.View;
 
 import androidx.annotation.LayoutRes;
 import androidx.annotation.NonNull;
@@ -19,6 +18,7 @@ import me.aap.fermata.R;
 public class ControlPanelSeekView extends AppCompatSeekBar {
 	private ConstraintSet constraints;
 	private ConstraintSet constraintsNoSeek;
+	private boolean twoRows = true;
 
 	public ControlPanelSeekView(@NonNull Context context, @Nullable AttributeSet attrs) {
 		super(context, attrs);
@@ -31,31 +31,29 @@ public class ControlPanelSeekView extends AppCompatSeekBar {
 	@Override
 	public void setEnabled(boolean enabled) {
 		if (isEnabled() == enabled) return;
+		super.setEnabled(enabled);
+		updateLayout();
+	}
 
+	void updateLayout() {
 		ControlPanelView p = getPanel();
-		View showHide = p.findViewById(R.id.show_hide_bars);
-		View menu = p.findViewById(R.id.control_menu_button);
-		View prev = p.findViewById(R.id.control_prev);
-		View next = p.findViewById(R.id.control_next);
+		boolean showTwoRows = isEnabled() || p.hasVideoShortcuts();
+		if (twoRows == showTwoRows) return;
+		twoRows = showTwoRows;
 
-		if (enabled) {
+		if (showTwoRows) {
 			if (constraints == null) constraints = load(R.layout.control_panel_view);
 			constraints.applyTo(p);
-			prev.setNextFocusLeftId(R.id.control_next);
-			showHide.setNextFocusLeftId(R.id.control_menu_button);
-			next.setNextFocusRightId(R.id.control_prev);
-			menu.setNextFocusRightId(R.id.show_hide_bars);
 		} else {
 			if (constraintsNoSeek == null) constraintsNoSeek = load(R.layout.control_panel_view2);
 			constraintsNoSeek.applyTo(p);
-			prev.setNextFocusLeftId(R.id.show_hide_bars);
-			showHide.setNextFocusLeftId(R.id.control_menu_button);
-			next.setNextFocusRightId(R.id.control_menu_button);
-			menu.setNextFocusRightId(R.id.show_hide_bars);
 		}
 
-		super.setEnabled(enabled);
 		p.computeSize();
+	}
+
+	boolean usesTwoRows() {
+		return twoRows;
 	}
 
 	private ConstraintSet load(@LayoutRes int layout) {
@@ -64,7 +62,10 @@ public class ControlPanelSeekView extends AppCompatSeekBar {
 		inflate(ctx, layout, l);
 		ConstraintSet cs = new ConstraintSet();
 		cs.clone(l);
-		cs.setVisibilityMode(R.id.control_subtitles, ConstraintSet.VISIBILITY_MODE_IGNORE);
+		for (int id : new int[]{R.id.seek_bar, R.id.control_rw, R.id.control_ff,
+				R.id.control_subtitles, R.id.control_fullscreen}) {
+			cs.setVisibilityMode(id, ConstraintSet.VISIBILITY_MODE_IGNORE);
+		}
 		return cs;
 	}
 
