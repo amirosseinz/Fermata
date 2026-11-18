@@ -9,7 +9,7 @@ Watch YouTube, IPTV, and video files on your car’s Android Auto display. This 
 | Feature | What it does |
 | --- | --- |
 | **Persian and Unicode subtitles** | Improves right-to-left layout, subtitle placement, cue timing, and handling of Unicode and legacy text encodings. |
-| **External and online subtitles** | Load SRT or WebVTT through Android's file picker, use matching sidecar files, or search OpenSubtitles from the phone. OpenSubtitles requires an API key. |
+| **External and online subtitles** | Load SRT or WebVTT through Android's file picker, use matching sidecar files, or search and download OpenSubtitles from the phone without entering an API key. Local video fingerprints are tried before title and episode matching. |
 | **Offline Whisper captions** | Choose and download verified models, then generate captions on-device through ExoPlayer. The model manager offers compact English and multilingual options. CPU and Vulkan support depend on the build and device. |
 | **Playback and Android Auto controls** | Adds full-screen controls, per-item volume, and buffering adjustments. Keeps the active car video surface attached when unrelated views change. |
 | **Nearby Screen** | Share screen video between two Android phones running Fermata on the same local network. Start **Receive an Android screen** on one phone, then **Share this Android screen** on the other and enter the pairing code. |
@@ -19,13 +19,22 @@ Fermata also plays music and playlists on Android and supports Android TV. Other
 
 ## Getting started
 
-**Fermata 2.1.0 (fork)** is the planned release of these changes, based on upstream Fermata **2.0.2**. The current test APK displays `2.0.2-subtitle.7`.
+**Fermata 2.1.0 (fork)** is the planned release of these changes, based on upstream Fermata **2.0.2**. The current subtitle-search preview displays `2.1.0-preview.1`.
 
 The test APK runs on ARM64 devices with Android 9 or later and appears in the phone launcher as **Fermata Auto**. Fermata is free.
 
 - **External subtitles** · Start a video on the phone. Open **Subtitles → Load external subtitles** and choose an SRT or VTT file.
+- **Find subtitles online** · Start a video on the phone, open **Subtitles → Find subtitles online**, confirm the title and language, then select a result. Fermata downloads and applies it to the active video.
 - **Automatic captions** · Enable ExoPlayer and open **Whisper models** on the phone to download a model. Choose **Generate captions** during playback. Model downloads require internet access.
 - **iPhone mirroring** · Open **Nearby Screen → Mirror iPhone (AirPlay)** on the receiving Android phone. Connect the devices to a local network that allows discovery. On the iPhone, open **Control Centre → Screen Mirroring**, choose **Fermata**, and enter the displayed PIN. On a compatible parked Android Auto host, use **Fermata Auto → Menu → Mirror iPhone (AirPlay)**.
+
+### Online subtitle search
+
+The default build uses a VLSub-compatible anonymous search session and the direct subtitle download link returned by OpenSubtitles. Users can choose English, Persian, and other supported languages. The download is checked for readable SRT/VTT cues before being applied, and compressed downloads are bounded in size.
+
+OpenSubtitles has announced retirement of its legacy XML-RPC service. This integration depends on its continuing availability. A service rejection, quota notice, or invalid subtitle produces an explicit error with Retry and New search controls. The search dialog also links to the provider's website. A publisher can configure its own registered REST API key at build time using `FERMATA_OPENSUBTITLES_API_KEY`. Users are never asked to obtain a developer key.
+
+The existing video parser, rendering engine, and persisted subtitle preference apply downloaded subtitles. Manage online searches on the phone when using Android Auto.
 
 ### AirPlay verification
 

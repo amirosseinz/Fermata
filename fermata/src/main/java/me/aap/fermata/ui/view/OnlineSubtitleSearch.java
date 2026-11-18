@@ -27,7 +27,7 @@ import me.aap.fermata.media.engine.SubtitleStreamInfo;
 import me.aap.fermata.media.lib.MediaLib.PlayableItem;
 import me.aap.fermata.media.sub.OpenSubtitlesClient;
 import me.aap.utils.app.App;
-import me.aap.utils.async.FutureSupplier;
+import me.aap.utils.function.CheckedSupplier;
 import me.aap.utils.function.Consumer;
 import me.aap.utils.ui.UiUtils;
 
@@ -72,42 +72,32 @@ final class OnlineSubtitleSearch {
 		language.setSelection(Math.max(0, Math.min(CODES.length - 1,
 				preferences.getInt("language", defaultLanguage))));
 		addLabeledControl(view, R.string.subtitle_search_language, language);
-		var configuredKey = BuildConfig.OPENSUBTITLES_API_KEY;
-		boolean usePublisherKey = !configuredKey.isEmpty();
-		var key = usePublisherKey ? null : field(view, R.string.subtitle_search_api_key, true);
-		if (key != null) key.setText(preferences.getString("api-key", ""));
 
-		var dialog = new AlertDialog.Builder(context).setTitle("Find subtitles online")
-				.setView(scroll(view)).setMessage("Search OpenSubtitles by video match or title.")
-				.setPositiveButton("Search", null)
-				.setNeutralButton("Open website", (d, which) -> openWebsite(title.getText().toString(),
+		var dialog = new AlertDialog.Builder(context).setTitle(R.string.subtitle_online_search)
+				.setView(scroll(view)).setMessage(R.string.subtitle_search_help)
+				.setPositiveButton(R.string.subtitle_search_action, null)
+				.setNeutralButton(R.string.subtitle_open_website, (d, which) -> openWebsite(title.getText().toString(),
 						language.getSelectedItemPosition()))
 				.setNegativeButton(android.R.string.cancel, null).show();
 		dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button -> {
 			var text = title.getText().toString().trim();
-			var apiKey = key == null ? configuredKey : key.getText().toString().trim();
 			if (text.isEmpty()) {
-				title.setError("Enter a title");
-				return;
-			}
-			if (key != null && apiKey.isEmpty()) {
-				key.setError("Enter your API key or use Open website");
+				title.setError(context.getString(R.string.subtitle_search_title_required));
 				return;
 			}
 			int selection = language.getSelectedItemPosition();
-			var settings = preferences.edit().putInt("language", selection);
-			if (key != null) settings.putString("api-key", apiKey);
-			settings.apply();
+			preferences.edit().putInt("language", selection).apply();
 			var code = CODES[selection];
 			dialog.dismiss();
-			var client = new OpenSubtitlesClient(apiKey);
-			var task = App.get().execute(() -> client.search(text, code, text.equals(suggested) ?
-					OpenSubtitlesClient.localHash(context.getContentResolver(), video.getLocation()) : null));
-			run("Searching OpenSubtitles…", task, results -> {
-				var resultDialog = new AlertDialog.Builder(context).setTitle("OpenSubtitles results")
+			var client = new OpenSubtitlesClient(BuildConfig.OPENSUBTITLES_API_KEY);
+			run(context.getString(R.string.subtitle_search_working),
+					() -> client.searchVideo(text, code, text.equals(suggested) ?
+							OpenSubtitlesClient.localFingerprint(context.getContentResolver(), video.getLocation()) : null),
+					results -> {
+				var resultDialog = new AlertDialog.Builder(context).setTitle(R.string.subtitle_search_results)
 						.setNegativeButton(android.R.string.cancel, null)
-						.setNeutralButton("New search", (d, which) -> show());
-				if (results.isEmpty()) resultDialog.setMessage("No subtitles found for this title and language.");
+						.setNeutralButton(R.string.subtitle_search_again, (d, which) -> show());
+				if (results.isEmpty()) resultDialog.setMessage(R.string.subtitle_search_empty);
 				else resultDialog.setItems(results.stream().map(OpenSubtitlesClient.Result::label)
 						.toArray(String[]::new), (d, index) -> authenticate(client, results.get(index)));
 				resultDialog.show();
@@ -116,6 +106,11 @@ final class OnlineSubtitleSearch {
 	}
 
 	private void authenticate(OpenSubtitlesClient client, OpenSubtitlesClient.Result result) {
+		if (result.directLink() != null) {
+			run(context.getString(R.string.subtitle_download_working),
+					() -> save(result, client.download(result, "", "")), onSelected);
+			return;
+		}
 		var view = form();
 		var user = field(view, R.string.subtitle_search_username, false);
 		var pass = field(view, R.string.subtitle_search_password, true);
@@ -134,8 +129,8 @@ final class OnlineSubtitleSearch {
 			}
 			pass.getText().clear();
 			dialog.dismiss();
-			run("Downloading subtitle…", App.get().execute(() ->
-					save(result, client.download(result, username, password))), onSelected);
+			run(context.getString(R.string.subtitle_download_working),
+					() -> save(result, client.download(result, username, password)), onSelected);
 		});
 	}
 
@@ -143,7 +138,8 @@ final class OnlineSubtitleSearch {
 		var directory = new File(context.getFilesDir(), "online-subtitles");
 		if (!directory.isDirectory() && !directory.mkdirs() && !directory.isDirectory())
 			throw new IOException("Could not create the subtitle folder.");
-		var file = File.createTempFile("opensubtitles-", ".srt", directory);
+		var extension = result.filename().toLowerCase(Locale.ROOT).endsWith(".vtt") ? ".vtt" : ".srt";
+		var file = File.createTempFile("opensubtitles-", extension, directory);
 		var lang = result.language();
 		var encoding = switch (lang) {
 			case "fa", "ar", "ur" -> "windows-1256";
@@ -156,7 +152,8 @@ final class OnlineSubtitleSearch {
 			try (var out = new FileOutputStream(file)) {
 				out.write(bytes);
 			}
-			stream.load(context);
+			if (stream.load(context).isEmpty())
+				throw new IOException(context.getString(R.string.subtitle_download_invalid));
 			valid = true;
 			return stream;
 		} finally {
@@ -165,10 +162,11 @@ final class OnlineSubtitleSearch {
 	}
 
 	private void openWebsite(String title, int language) {
+		String[] languages = {"eng", "per", "ara", "fre", "spa", "ger", "tur", "rus",
+				"ita", "por", "pob", "chi", "jpn", "kor", "hin", "all"};
 		var url = Uri.parse("https://www.opensubtitles.org/en/search2").buildUpon()
 				.appendQueryParameter("MovieName", title)
-				.appendQueryParameter("SubLanguageID", language < 2 ?
-						(language == 0 ? "eng" : "per") : "all").build();
+				.appendQueryParameter("SubLanguageID", languages[language]).build();
 		try {
 			context.startActivity(new Intent(Intent.ACTION_VIEW, url));
 		} catch (android.content.ActivityNotFoundException ignored) {
@@ -210,18 +208,29 @@ final class OnlineSubtitleSearch {
 		parent.addView(control, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
 	}
 
-	private <T> void run(String title, FutureSupplier<T> work, Consumer<T> result) {
+	private <T> void run(String title, CheckedSupplier<T, Throwable> operation, Consumer<T> result) {
 		var contents = form();
 		contents.addView(new ProgressBar(context));
 		var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+		var work = App.get().execute(operation);
 		var dialog = new AlertDialog.Builder(context).setTitle(title).setView(contents)
-				.setNegativeButton(android.R.string.cancel, (d, which) -> cancelled.set(true))
-				.setOnCancelListener(d -> cancelled.set(true)).show();
+				.setNegativeButton(android.R.string.cancel, (d, which) -> {
+					cancelled.set(true);
+					work.cancel();
+				})
+				.setOnCancelListener(d -> {
+					cancelled.set(true);
+					work.cancel();
+				}).show();
 		work.main().onCompletion((value, error) -> {
 			dialog.dismiss();
 			if (cancelled.get()) return;
 			if (error == null) result.accept(value);
-			else UiUtils.showAlert(context, "OpenSubtitles: " + error.getLocalizedMessage());
+			else new AlertDialog.Builder(context).setTitle(R.string.subtitle_search_error)
+					.setMessage(error.getLocalizedMessage())
+					.setPositiveButton(R.string.subtitle_search_retry, (d, which) -> run(title, operation, result))
+					.setNeutralButton(R.string.subtitle_search_again, (d, which) -> show())
+					.setNegativeButton(android.R.string.cancel, null).show();
 		});
 	}
 }

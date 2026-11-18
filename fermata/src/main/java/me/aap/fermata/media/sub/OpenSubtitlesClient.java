@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
 import java.util.zip.ZipInputStream;
+import java.util.zip.GZIPInputStream;
 
 import me.aap.fermata.BuildConfig;
 
@@ -35,12 +36,18 @@ public final class OpenSubtitlesClient {
 	private final String key;
 
 	public OpenSubtitlesClient(String key) {
-		this.key = key;
+		this.key = key == null ? "" : key.trim();
 	}
 
 	public List<Result> search(String title, String language, String hash) throws Exception {
+		return searchVideo(title, language, hash == null ? null : new Fingerprint(hash, 0));
+	}
+
+	public List<Result> searchVideo(String title, String language, Fingerprint fingerprint) throws Exception {
+		if (key.isEmpty()) return new VlSubClient().search(title, language, fingerprint);
 		var results = new LinkedHashMap<Long, Result>();
 		String filters = language.isEmpty() ? "" : "&languages=" + Uri.encode(language);
+		String hash = fingerprint == null ? null : fingerprint.hash();
 		if (hash != null) {
 			collect(request(API_HOST, "/subtitles?moviehash=" + hash + filters, null, null), results);
 			if (!results.isEmpty()) return sorted(results);
@@ -57,6 +64,7 @@ public final class OpenSubtitlesClient {
 	}
 
 	public byte[] download(Result result, String username, String password) throws Exception {
+		if (result.directLink() != null) return unpack(getDownload(URI.create(result.directLink())));
 		var login = request(API_HOST, "/login", new JSONObject().put("username", username)
 				.put("password", password), null);
 		var host = login.optString("base_url", API_HOST);
@@ -64,20 +72,43 @@ public final class OpenSubtitlesClient {
 		var response = request(host, "/download", new JSONObject().put("file_id", result.id())
 				.put("sub_format", "srt"), login.getString("token"));
 		var link = URI.create(response.getString("link"));
-		var bytes = getDownload(link);
+		return unpack(getDownload(link));
+	}
+
+	static byte[] unpack(byte[] bytes) throws IOException {
+		if (bytes.length >= 2 && (bytes[0] & 255) == 0x1f && (bytes[1] & 255) == 0x8b) {
+			try (var gzip = new GZIPInputStream(new ByteArrayInputStream(bytes))) {
+				bytes = readBounded(gzip);
+			}
+		}
 		if (bytes.length >= 4 && bytes[0] == 'P' && bytes[1] == 'K') {
 			try (var zip = new ZipInputStream(new ByteArrayInputStream(bytes))) {
+				int unpacked = 0;
 				for (int i = 0; i < 16; i++) {
 					var entry = zip.getNextEntry();
 					if (entry == null) break;
-					if (entry.isDirectory() || !FileSubtitles.isSupported(entry.getName()))
-						throw new IOException("The archive needs to contain an SRT or VTT subtitle.");
+					if (entry.isDirectory()) continue;
 					var file = readBounded(zip);
-					if (file.length > 0) return file;
+					unpacked += file.length;
+					if (unpacked > MAX_RESPONSE) throw new IOException("Subtitle archive exceeds 4 MiB.");
+					if (!FileSubtitles.isSupported(entry.getName())) continue;
+					if (file.length > 0) return checkedSubtitle(file);
 				}
 			}
 			throw new IOException("The archive contains no subtitle file.");
 		}
+		return checkedSubtitle(bytes);
+	}
+
+	private static byte[] checkedSubtitle(byte[] bytes) throws IOException {
+		// Some retired API routes return a valid SRT containing only a VIP advertisement.
+		String content = new String(bytes, StandardCharsets.UTF_8).toLowerCase(Locale.ROOT);
+		boolean notice = content.contains("osdb.link/vip") ||
+				(content.contains("become opensubtitles") && content.contains("vip member"));
+		if (bytes.length < 4096 && notice && content.indexOf("-->") == content.lastIndexOf("-->")) {
+			throw new IOException("OpenSubtitles returned a VIP notice instead of subtitles. Choose another result or use the website.");
+		}
+		if (bytes.length == 0) throw new IOException("The downloaded subtitle is empty.");
 		return bytes;
 	}
 
@@ -138,6 +169,7 @@ public final class OpenSubtitlesClient {
 
 	private static byte[] getDownload(URI uri) throws IOException {
 		for (int attempt = 0; attempt < 5; attempt++) {
+			validateDownloadUri(uri);
 			var connection = connection(uri);
 			try {
 				int status = connection.getResponseCode();
@@ -158,7 +190,17 @@ public final class OpenSubtitlesClient {
 		throw new IOException("Too many subtitle download redirects.");
 	}
 
-	private static HttpURLConnection connection(URI uri) throws IOException {
+	static void validateDownloadUri(URI uri) throws IOException {
+		String host = uri.getHost();
+		if (!"https".equalsIgnoreCase(uri.getScheme()) || host == null || uri.getUserInfo() != null ||
+				(uri.getPort() != -1 && uri.getPort() != 443) ||
+				!(host.equalsIgnoreCase("opensubtitles.org") || host.toLowerCase(Locale.ROOT).endsWith(".opensubtitles.org") ||
+						host.equalsIgnoreCase("opensubtitles.com") || host.toLowerCase(Locale.ROOT).endsWith(".opensubtitles.com"))) {
+			throw new IOException("Subtitle download must come from OpenSubtitles over HTTPS.");
+		}
+	}
+
+	static HttpURLConnection connection(URI uri) throws IOException {
 		if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null || uri.getUserInfo() != null)
 			throw new IOException("Subtitle server must use HTTPS.");
 		var connection = (HttpURLConnection) uri.toURL().openConnection();
@@ -178,10 +220,12 @@ public final class OpenSubtitlesClient {
 		throw new IOException("OpenSubtitles returned HTTP " + status + ".");
 	}
 
-	private static byte[] readBounded(InputStream stream) throws IOException {
+	static byte[] readBounded(InputStream stream) throws IOException {
 		var output = new ByteArrayOutputStream();
 		var buffer = new byte[8192];
 		for (int read; (read = stream.read(buffer)) != -1; ) {
+			if (Thread.currentThread().isInterrupted())
+				throw new java.io.InterruptedIOException("Subtitle request cancelled.");
 			if (output.size() + read > MAX_RESPONSE) throw new IOException("Subtitle response exceeds 4 MiB.");
 			output.write(buffer, 0, read);
 		}
@@ -218,13 +262,20 @@ public final class OpenSubtitlesClient {
 	}
 
 	public static String localHash(ContentResolver resolver, Uri video) {
+		var fingerprint = localFingerprint(resolver, video);
+		return fingerprint == null ? null : fingerprint.hash();
+	}
+
+	public static Fingerprint localFingerprint(ContentResolver resolver, Uri video) {
 		if (video == null || !("file".equals(video.getScheme()) || "content".equals(video.getScheme())))
 			return null;
 		try {
 			var descriptor = resolver.openFileDescriptor(video, "r");
 			if (descriptor == null) return null;
 			try (var stream = new ParcelFileDescriptor.AutoCloseInputStream(descriptor)) {
-				return hash(stream.getChannel());
+				var channel = stream.getChannel();
+				String hash = hash(channel);
+				return hash == null ? null : new Fingerprint(hash, channel.size());
 			}
 		} catch (IOException | RuntimeException ignored) {
 			return null;
@@ -246,7 +297,13 @@ public final class OpenSubtitlesClient {
 		return String.format(Locale.ROOT, "%016x", sum);
 	}
 
-	public record Result(long id, String filename, String release, String language, boolean exact, int downloads) {
+	public record Fingerprint(String hash, long bytes) {}
+
+	public record Result(long id, String filename, String release, String language, boolean exact,
+						 int downloads, String directLink) {
+		public Result(long id, String filename, String release, String language, boolean exact, int downloads) {
+			this(id, filename, release, language, exact, downloads, null);
+		}
 		public String label() {
 			return filename + "\n" + (exact ? "Exact video match · " : "") +
 					language + " · " + downloads + " downloads" +
